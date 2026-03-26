@@ -851,69 +851,232 @@ export default function App() {
       setExporting(false);
     }
   };
+const doExportSVG = () => {
+  const map = mapRef.current;
+  if (!map) return;
 
-  const doExportSVG=()=>{
-    const map=mapRef.current; if(!map) return;
-    const surface=document.querySelector(".export-surface");
-    const W=surface.offsetWidth, H=surface.offsetHeight;
-    const overlaySvg=map.getPanes().overlayPane?.querySelector("svg");
-    let overlayContent="";
-    if(overlaySvg){ const clone=overlaySvg.cloneNode(true); clone.style.transform=""; clone.removeAttribute("transform"); overlayContent=clone.innerHTML; }
-    const markerPts=[];
-    map.getPanes().markerPane?.querySelectorAll(".leaflet-marker-icon").forEach(img=>{
-      const rect=img.getBoundingClientRect(), surfRect=surface.getBoundingClientRect();
-      markerPts.push({x:rect.left-surfRect.left+rect.width/2,y:rect.top-surfRect.top+rect.height/2,src:img.src,w:rect.width,h:rect.height});
+  const surface = document.querySelector(".export-surface");
+  if (!surface) return;
+
+  const W = surface.offsetWidth;
+  const H = surface.offsetHeight;
+
+  const overlaySvg = map.getPanes().overlayPane?.querySelector("svg");
+  let overlayContent = "";
+
+  if (overlaySvg) {
+    const clone = overlaySvg.cloneNode(true);
+    clone.style.transform = "";
+    clone.removeAttribute("transform");
+    clone.removeAttribute("style");
+
+    // Force inline styles so exported vectors stay visible/editable
+    clone.querySelectorAll("*").forEach((el) => {
+      const cs = window.getComputedStyle(el);
+      if (!cs) return;
+
+      if (cs.fill) el.setAttribute("fill", cs.fill);
+      if (cs.stroke) el.setAttribute("stroke", cs.stroke);
+      if (cs.strokeWidth) el.setAttribute("stroke-width", cs.strokeWidth);
+      if (cs.fillOpacity) el.setAttribute("fill-opacity", cs.fillOpacity);
+      if (cs.strokeOpacity) el.setAttribute("stroke-opacity", cs.strokeOpacity);
+      if (cs.opacity) el.setAttribute("opacity", cs.opacity);
+      if (cs.strokeDasharray && cs.strokeDasharray !== "none") {
+        el.setAttribute("stroke-dasharray", cs.strokeDasharray);
+      }
+      if (cs.strokeLinecap) el.setAttribute("stroke-linecap", cs.strokeLinecap);
+      if (cs.strokeLinejoin) el.setAttribute("stroke-linejoin", cs.strokeLinejoin);
     });
-    const tooltipSvg=[];
-    map.getPanes().tooltipPane?.querySelectorAll(".mv-label").forEach(el=>{
-      const rect=el.getBoundingClientRect(),surfRect=surface.getBoundingClientRect();
-      tooltipSvg.push(`<text x="${rect.left-surfRect.left}" y="${rect.top-surfRect.top+11}" font-size="11" font-family="Arial" font-weight="600" fill="#111">${escapeXml(el.textContent)}</text>`);
+
+    overlayContent = clone.innerHTML;
+  }
+
+  const tooltipSvg = [];
+  map.getPanes()
+    .tooltipPane?.querySelectorAll(".mv-label")
+    .forEach((el) => {
+      const rect = el.getBoundingClientRect();
+      const surfRect = surface.getBoundingClientRect();
+      tooltipSvg.push(
+        `<text x="${rect.left - surfRect.left}" y="${rect.top - surfRect.top + 11}" font-size="11" font-family="Arial" font-weight="600" fill="#111">${escapeXml(el.textContent)}</text>`
+      );
     });
-    const mapW2=containerRef.current?.offsetWidth??900;
-    const tx=titlePos.x!==null?titlePos.x:mapW2-254, ty=titlePos.y, tw=titlePos.w??240, th=titlePos.h??62;
-    const lx=legendPos.x, ly=legendPos.y??(H-200), lw=legendPos.w??200, lh2=legendItems.length*24+20;
-    const legendSvg=showLegend&&legendItems.length?`<g>
+
+  // Export point layers from map coordinates, not DOM marker image positions
+  const pointLayerSvg = layers
+    .filter((l) => l.visible !== false && l.isPoint && l._geojson)
+    .flatMap((layer) => {
+      const features =
+        layer._geojson?.type === "FeatureCollection"
+          ? layer._geojson.features || []
+          : layer._geojson?.type === "Feature"
+            ? [layer._geojson]
+            : [];
+
+      const color = layer.markerColor || layer.color || "#1a1a1a";
+      const radius = Number(layer.pointRadius || 6);
+      const opacity = Number(layer.layerOpacity ?? 1);
+      const markerType = layer.markerType || "circle";
+
+      return features
+        .filter(
+          (f) =>
+            f?.geometry?.type === "Point" &&
+            Array.isArray(f.geometry.coordinates) &&
+            f.geometry.coordinates.length >= 2
+        )
+        .map((f, idx) => {
+          const [lng, lat] = f.geometry.coordinates;
+          const pt = map.latLngToContainerPoint([lat, lng]);
+          const x = pt.x;
+          const y = pt.y;
+
+          switch (markerType) {
+            case "square":
+              return `<rect x="${x - radius}" y="${y - radius}" width="${radius * 2}" height="${radius * 2}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+
+            case "diamond":
+              return `<polygon points="${x},${y - radius} ${x + radius},${y} ${x},${y + radius} ${x - radius},${y}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+
+            case "triangle":
+              return `<polygon points="${x},${y - radius} ${x + radius * 0.9},${y + radius} ${x - radius * 0.9},${y + radius}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+
+            case "cross":
+              return `
+                <g opacity="${opacity}">
+                  <line x1="${x - radius}" y1="${y}" x2="${x + radius}" y2="${y}" stroke="${color}" stroke-width="2"/>
+                  <line x1="${x}" y1="${y - radius}" x2="${x}" y2="${y + radius}" stroke="${color}" stroke-width="2"/>
+                </g>
+              `;
+
+            default:
+              return `<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+          }
+        });
+    })
+    .join("");
+
+  const mapW2 = containerRef.current?.offsetWidth ?? 900;
+  const tx = titlePos.x !== null ? titlePos.x : mapW2 - 254;
+  const ty = titlePos.y;
+  const tw = titlePos.w ?? 240;
+  const th = titlePos.h ?? 62;
+
+  const lx = legendPos.x;
+  const ly = legendPos.y ?? H - 200;
+  const lw = legendPos.w ?? 200;
+  const lh2 = legendItems.length * 24 + 20;
+
+  const legendSvg =
+    showLegend && legendItems.length
+      ? `<g>
       <rect x="${lx}" y="${ly}" width="${lw}" height="${lh2}" fill="rgba(255,255,255,0.96)" stroke="#b8c4ce" stroke-width="1" rx="2"/>
-      ${legendItems.map((item,i)=>`<g transform="translate(${lx+10},${ly+14+i*24})">
-        ${item.type==="line"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.strokeColor||item.color}" stroke-width="2.5" ${item.dashArray?`stroke-dasharray="${item.dashArray}"`:""}/>`:item.type==="marker"?`<circle cx="9" cy="9" r="7" fill="${item.color}" stroke="#333" stroke-width="1"/>`:item.type==="dashed-area"?`<rect x="0" y="0" width="18" height="18" fill="${item.color}" fill-opacity="0.15" stroke="${item.strokeColor||item.color}" stroke-width="2" stroke-dasharray="${item.dashArray||"8,4"}"/>`:item.type==="rail"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.strokeColor||item.color}" stroke-width="2.5" stroke-dasharray="${item.dashArray||"14,6,2,6"}"/>`:`<rect x="0" y="0" width="18" height="18" fill="${item.color}" stroke="${item.strokeColor||item.color}" stroke-width="1.2"/>`}
+      ${legendItems
+        .map(
+          (item, i) => `<g transform="translate(${lx + 10},${ly + 14 + i * 24})">
+        ${
+          item.type === "line"
+            ? `<line x1="0" y1="8" x2="20" y2="8" stroke="${item.strokeColor || item.color}" stroke-width="2.5" ${item.dashArray ? `stroke-dasharray="${item.dashArray}"` : ""}/>`
+            : item.type === "marker"
+              ? `<circle cx="9" cy="9" r="7" fill="${item.color}" stroke="#333" stroke-width="1"/>`
+              : item.type === "dashed-area"
+                ? `<rect x="0" y="0" width="18" height="18" fill="${item.color}" fill-opacity="0.15" stroke="${item.strokeColor || item.color}" stroke-width="2" stroke-dasharray="${item.dashArray || "8,4"}"/>`
+                : item.type === "rail"
+                  ? `<line x1="0" y1="8" x2="20" y2="8" stroke="${item.strokeColor || item.color}" stroke-width="2.5" stroke-dasharray="${item.dashArray || "14,6,2,6"}"/>`
+                  : `<rect x="0" y="0" width="18" height="18" fill="${item.color}" stroke="${item.strokeColor || item.color}" stroke-width="1.2"/>`
+        }
         <text x="26" y="13" font-size="13" font-family="Arial" fill="#1a2232">${escapeXml(item.text)}</text>
-      </g>`).join("")}
-    </g>`:"";
-    const titleSvg=`<g><rect x="${tx}" y="${ty}" width="${tw}" height="${th}" fill="rgba(8,30,92,0.96)"/>
-      <text x="${tx+14}" y="${ty+28}" font-size="18" font-family="Arial" font-weight="800" fill="#fff">${escapeXml(title)}</text>
-      <text x="${tx+14}" y="${ty+48}" font-size="11" font-family="Arial" fill="rgba(255,255,255,0.8)">${escapeXml(subtitle)}</text>
+      </g>`
+        )
+        .join("")}
+    </g>`
+      : "";
+
+  const titleSvg = `<g><rect x="${tx}" y="${ty}" width="${tw}" height="${th}" fill="rgba(8,30,92,0.96)"/>
+      <text x="${tx + 14}" y="${ty + 28}" font-size="18" font-family="Arial" font-weight="800" fill="#fff">${escapeXml(title)}</text>
+      <text x="${tx + 14}" y="${ty + 48}" font-size="11" font-family="Arial" fill="rgba(255,255,255,0.8)">${escapeXml(subtitle)}</text>
     </g>`;
-    const textSvg=textEls.map(t=>{ const lines=String(t.text||"").split(/\n/); return `<text x="${t.x+4}" y="${t.y+18}" font-size="${t.size}" font-family="Arial" font-weight="${t.bold?"700":"400"}" fill="${t.color}">${lines.map((line,i)=>`<tspan x="${t.x+4}" dy="${i===0?0:t.size*1.15}">${escapeXml(line)}</tspan>`).join("")}</text>`; }).join("");
-    const calloutSvg=callouts.map(c=>{
-      const lines=c.text.replace(/\\n/g,"\n").split("\n");
-      const bw=c.w??Math.max(120,Math.max(...lines.map(l=>l.length))*7.5+24), bh=c.h??(lines.length*18+14);
-      return `<g><line x1="${c.pinX}" y1="${c.pinY}" x2="${c.boxX+bw/2}" y2="${c.boxY+bh}" stroke="${c.borderColor}" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+  const textSvg = textEls
+    .map((t) => {
+      const lines = String(t.text || "").split(/\n/);
+      return `<text x="${t.x + 4}" y="${t.y + 18}" font-size="${t.size}" font-family="Arial" font-weight="${t.bold ? "700" : "400"}" fill="${t.color}">${lines
+        .map(
+          (line, i) =>
+            `<tspan x="${t.x + 4}" dy="${i === 0 ? 0 : t.size * 1.15}">${escapeXml(line)}</tspan>`
+        )
+        .join("")}</text>`;
+    })
+    .join("");
+
+  const calloutSvg = callouts
+    .map((c) => {
+      const lines = c.text.replace(/\\n/g, "\n").split("\n");
+      const bw = c.w ?? Math.max(120, Math.max(...lines.map((l) => l.length)) * 7.5 + 24);
+      const bh = c.h ?? lines.length * 18 + 14;
+      return `<g><line x1="${c.pinX}" y1="${c.pinY}" x2="${c.boxX + bw / 2}" y2="${c.boxY + bh}" stroke="${c.borderColor}" stroke-width="1.5" stroke-dasharray="5,3"/>
         <circle cx="${c.pinX}" cy="${c.pinY}" r="5" fill="${c.borderColor}"/>
-        <rect x="${c.boxX}" y="${c.boxY}" width="${bw}" height="${bh}" fill="${c.bgColor}" stroke="${c.borderColor}" stroke-width="1.5" rx="3"/>
-        ${lines.map((line,i)=>`<text x="${c.boxX+10}" y="${c.boxY+15+i*18}" font-size="12" font-family="Arial" font-weight="600" fill="${c.borderColor}">${escapeXml(line)}</text>`).join("")}
+        <rect x="${c.boxX}" y="${c.boxY}" width="${bw}" height="${bh}" rx="3" fill="${c.fillColor}" stroke="${c.borderColor}" stroke-width="1.5"/>
+        ${lines
+          .map(
+            (line, i) =>
+              `<text x="${c.boxX + 12}" y="${c.boxY + 20 + i * 18}" font-size="13" font-family="Arial" font-weight="${i === 0 ? "700" : "400"}" fill="${c.textColor}">${escapeXml(line)}</text>`
+          )
+          .join("")}
       </g>`;
-    }).join("");
-    const curveSvg=curvedLabels.map(cl=>{
-      try{
-        const p1=map.latLngToContainerPoint(cl.p1), p2=map.latLngToContainerPoint(cl.p2);
-        const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2, dx=p2.x-p1.x, dy=p2.y-p1.y;
-        const pid=`svgcvp-${cl.id}`;
-        return `<defs><path id="${pid}" d="M ${p1.x} ${p1.y} Q ${mx-dy*0.25} ${my+dx*0.25} ${p2.x} ${p2.y}"/></defs>
-          <text fill="${cl.color}" font-size="${cl.size}" font-family="Arial" font-weight="700" letter-spacing="2"><textPath href="#${pid}" startOffset="50%" text-anchor="middle">${escapeXml(cl.text)}</textPath></text>`;
-      }catch{return "";}
-    }).join("");
-    const canvasImgSvg=canvasImages.filter(o=>o.visible!==false).map(o=>`<image href="${o.src}" x="${o.px}" y="${o.py}" width="${o.pw}" height="${o.ph}" opacity="${o.opacity}"/>`).join("");
-    const naSvg=northArrow?`<g transform="translate(20,20)"><circle cx="22" cy="22" r="20" fill="rgba(255,255,255,0.88)" stroke="#aaa" stroke-width="1"/><polygon points="20,4 27,28 20,23 13,28" fill="#111"/><polygon points="20,40 27,18 20,23 13,18" fill="#eee" stroke="#111" stroke-width="0.8"/><text x="20" y="50" text-anchor="middle" font-size="10" font-weight="bold" fill="#111" font-family="Arial">N</text></g>`:"";
-    const logoSvg=logo?`<image href="${logo}" x="${logoPos.x}" y="${logoPos.y}" width="${logoPos.w}" height="${logoPos.h}"/>`:"";
-    const insetX2=insetPos.x!==null?insetPos.x:mapW2-208;
-    const insetSvg=showInset&&insetImage?`<image href="${insetImage}" x="${insetX2}" y="${insetPos.y}" width="${insetPos.w}" height="${insetPos.h}"/>`:"";
-    const markersSvg=markerPts.map(pt=>`<image href="${pt.src}" x="${pt.x-pt.w/2}" y="${pt.y-pt.h/2}" width="${pt.w}" height="${pt.h}"/>`).join("");
-    const svg=`<?xml version="1.0" encoding="UTF-8"?>
+    })
+    .join("");
+
+  const curveSvg = curvedLabels
+    .map((cl) => {
+      try {
+        const p1 = map.latLngToContainerPoint(cl.p1);
+        const p2 = map.latLngToContainerPoint(cl.p2);
+        const mx = (p1.x + p2.x) / 2;
+        const my = (p1.y + p2.y) / 2;
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const nx = -dy * 0.18;
+        const ny = dx * 0.18;
+        const pid = `curve-${cl.id}`;
+        return `
+          <defs>
+            <path id="${pid}" d="M ${p1.x} ${p1.y} Q ${mx + nx} ${my + ny} ${p2.x} ${p2.y}" />
+          </defs>
+          <text font-size="${cl.size}" font-family="Arial" font-weight="700" fill="${cl.color}">
+            <textPath href="#${pid}" startOffset="50%" text-anchor="middle">${escapeXml(cl.text)}</textPath>
+          </text>
+        `;
+      } catch {
+        return "";
+      }
+    })
+    .join("");
+
+  const naSvg = northArrow
+    ? `<g transform="translate(20,20)">
+        <circle cx="20" cy="20" r="18" fill="rgba(255,255,255,0.85)" stroke="#111" stroke-width="1.2"/>
+        <polygon points="20,2 27,22 20,17 13,22" fill="#111"/>
+        <polygon points="20,38 27,18 20,23 13,18" fill="#eee" stroke="#111" stroke-width="0.8"/>
+        <text x="20" y="50" text-anchor="middle" font-size="10" font-weight="bold" fill="#111" font-family="Arial">N</text>
+      </g>`
+    : "";
+
+  const logoSvg = logo
+    ? `<image href="${logo}" x="${logoPos.x}" y="${logoPos.y}" width="${logoPos.w}" height="${logoPos.h}"/>`
+    : "";
+
+  const insetX2 = insetPos.x !== null ? insetPos.x : mapW2 - 208;
+  const insetSvg =
+    showInset && insetImage
+      ? `<image href="${insetImage}" x="${insetX2}" y="${insetPos.y}" width="${insetPos.w}" height="${insetPos.h}"/>`
+      : "";
+
+  const svg = `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <rect width="${W}" height="${H}" fill="#e8e8e8"/>
-  <g id="canvas-images">${canvasImgSvg}</g>
   <g id="vectors">${overlayContent}</g>
-  <g id="markers">${markersSvg}</g>
+  <g id="point-layers">${pointLayerSvg}</g>
   <g id="labels">${tooltipSvg.join("")}</g>
   <g id="curved-text">${curveSvg}</g>
   <g id="callouts">${calloutSvg}</g>
@@ -924,11 +1087,14 @@ export default function App() {
   <g id="legend">${legendSvg}</g>
   <g id="north-arrow">${naSvg}</g>
 </svg>`;
-    const blob=new Blob([svg],{type:"image/svg+xml;charset=utf-8"});
-    const a=document.createElement("a");
-    a.href=URL.createObjectURL(blob); a.download=`${title.toLowerCase().replace(/\s+/g,"-")}-map.svg`; a.click();
-    URL.revokeObjectURL(a.href);
-  };
+
+  const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${title.toLowerCase().replace(/\s+/g, "-")}-map.svg`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+};
 
   // ── Curved text renderer ──────────────────────────────────────────────────
   const renderCurvedLabels=()=>{
