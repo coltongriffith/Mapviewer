@@ -887,31 +887,19 @@ export default function App() {
       tooltipSvg.push(`<text x="${rect.left-surfRect.left}" y="${rect.top-surfRect.top+11}" font-size="11" font-family="Arial" font-weight="600" fill="#111">${escapeXml(el.textContent)}</text>`);
     });
 
-    const pointLayerSvg = layers
-      .filter(l => l.visible !== false && l.isPoint && l._geojson)
-      .flatMap(layer => {
-        const features = layer._geojson?.type === "FeatureCollection"
-          ? (layer._geojson.features || [])
-          : layer._geojson?.type === "Feature"
-            ? [layer._geojson]
-            : [];
-
-        const color = layer.markerColor || layer.color || "#1a1a1a";
-        const radius = Number(layer.pointRadius || 6);
-        const opacity = Number(layer.layerOpacity ?? 1);
-        const markerType = layer.markerType || "circle";
-        const size = radius * 2;
-        const href = markerSvgUrl(markerType, color, size);
-
-        return features
-          .filter(f => f?.geometry?.type === "Point" && Array.isArray(f.geometry.coordinates) && f.geometry.coordinates.length >= 2)
-          .map(f => {
-            const [lng, lat] = f.geometry.coordinates;
-            const pt = map.latLngToContainerPoint([lat, lng]);
-            const x = pt.x - radius;
-            const y = pt.y - radius;
-            return `<image href="${href}" x="${x}" y="${y}" width="${size}" height="${size}" opacity="${opacity}"/>`;
-          });
+    const surfaceRect = surface.getBoundingClientRect();
+    const pointLayerSvg = Array.from(map.getPanes().markerPane?.querySelectorAll(".leaflet-marker-icon") || [])
+      .map((img) => {
+        const rect = img.getBoundingClientRect();
+        const style = window.getComputedStyle(img);
+        const opacity = style?.opacity || img.style.opacity || "1";
+        const x = rect.left - surfaceRect.left;
+        const y = rect.top - surfaceRect.top;
+        const w = rect.width;
+        const h = rect.height;
+        const href = img.getAttribute("src") || img.src;
+        if (!href || !w || !h) return "";
+        return `<image href="${href}" x="${x}" y="${y}" width="${w}" height="${h}" opacity="${opacity}"/>`;
       })
       .join("");
 
