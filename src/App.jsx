@@ -935,27 +935,50 @@ const surfaceRect = surface.getBoundingClientRect();
 const x = pt.x + (mapRect.left - surfaceRect.left);
 const y = pt.y + (mapRect.top - surfaceRect.top);
 
-          switch (markerType) {
-            case "square":
-              return `<rect x="${x - radius}" y="${y - radius}" width="${radius * 2}" height="${radius * 2}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+switch (markerType) {
+  case "square":
+    return `<rect x="${x - radius}" y="${y - radius}" width="${radius * 2}" height="${radius * 2}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
 
-            case "diamond":
-              return `<polygon points="${x},${y - radius} ${x + radius},${y} ${x},${y + radius} ${x - radius},${y}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+  case "diamond":
+    return `<polygon points="${x},${y - radius} ${x + radius},${y} ${x},${y + radius} ${x - radius},${y}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
 
-            case "triangle":
-              return `<polygon points="${x},${y - radius} ${x + radius * 0.9},${y + radius} ${x - radius * 0.9},${y + radius}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+  case "triangle":
+    return `<polygon points="${x},${y - radius} ${x + radius * 0.9},${y + radius} ${x - radius * 0.9},${y + radius}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
 
-            case "cross":
-              return `
-                <g opacity="${opacity}">
-                  <line x1="${x - radius}" y1="${y}" x2="${x + radius}" y2="${y}" stroke="${color}" stroke-width="2"/>
-                  <line x1="${x}" y1="${y - radius}" x2="${x}" y2="${y + radius}" stroke="${color}" stroke-width="2"/>
-                </g>
-              `;
+  case "cross":
+    return `
+      <g opacity="${opacity}">
+        <line x1="${x - radius}" y1="${y}" x2="${x + radius}" y2="${y}" stroke="${color}" stroke-width="2"/>
+        <line x1="${x}" y1="${y - radius}" x2="${x}" y2="${y + radius}" stroke="${color}" stroke-width="2"/>
+      </g>
+    `;
 
-            default:
-              return `<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
-          }
+  case "drillhole": {
+    const s = radius * 2;
+    const h = radius;
+    return `
+      <g opacity="${opacity}">
+        <polygon
+          points="${x},${y + h - 1} ${x - h + 1},${y - h + 1} ${x + h - 1},${y - h + 1}"
+          fill="${color}"
+          stroke="#ffffff"
+          stroke-width="1"
+        />
+        <line
+          x1="${x}"
+          y1="${y - h}"
+          x2="${x}"
+          y2="${y + h}"
+          stroke="${color}"
+          stroke-width="2"
+        />
+      </g>
+    `;
+  }
+
+  default:
+    return `<circle cx="${x}" cy="${y}" r="${radius}" fill="${color}" fill-opacity="${opacity}" stroke="#ffffff" stroke-width="1.2"/>`;
+}
         });
     })
     .join("");
