@@ -647,6 +647,93 @@ export default function App() {
   };
 
   // ── PNG Export ────────────────────────────────────────────────────────────
+  function svgNodeToDataUrl(svgNode) {
+    const serializer = new XMLSerializer();
+    let svgText = serializer.serializeToString(svgNode);
+
+    if (!svgText.includes('xmlns="http://www.w3.org/2000/svg"')) {
+      svgText = svgText.replace(
+        "<svg",
+        '<svg xmlns="http://www.w3.org/2000/svg"'
+      );
+    }
+
+    if (!svgText.includes('xmlns:xlink="http://www.w3.org/1999/xlink"')) {
+      svgText = svgText.replace(
+        "<svg",
+        '<svg xmlns:xlink="http://www.w3.org/1999/xlink"'
+      );
+    }
+
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgText)}`;
+  }
+
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.crossOrigin = "anonymous";
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  function getLeafletOverlayImageInfo(map, surface) {
+    const overlayPane = map.getPanes().overlayPane;
+    const overlaySvg = overlayPane?.querySelector("svg");
+    if (!overlaySvg) return null;
+
+    const mapPane = map.getPanes().mapPane;
+    const mapRect = surface.getBoundingClientRect();
+    const mapPaneRect = mapPane.getBoundingClientRect();
+    const overlayRect = overlaySvg.getBoundingClientRect();
+
+    const cloned = overlaySvg.cloneNode(true);
+
+    cloned.removeAttribute("style");
+    cloned.style.display = "block";
+    cloned.style.visibility = "visible";
+    cloned.style.overflow = "visible";
+
+    cloned.querySelectorAll("*").forEach((el) => {
+      const cs = window.getComputedStyle(el);
+      if (!cs) return;
+
+      if (cs.fill) el.setAttribute("fill", cs.fill);
+      if (cs.stroke) el.setAttribute("stroke", cs.stroke);
+      if (cs.strokeWidth) el.setAttribute("stroke-width", cs.strokeWidth);
+      if (cs.fillOpacity) el.setAttribute("fill-opacity", cs.fillOpacity);
+      if (cs.strokeOpacity) el.setAttribute("stroke-opacity", cs.strokeOpacity);
+      if (cs.opacity) el.setAttribute("opacity", cs.opacity);
+      if (cs.strokeDasharray && cs.strokeDasharray !== "none") {
+        el.setAttribute("stroke-dasharray", cs.strokeDasharray);
+      }
+      if (cs.strokeLinecap) el.setAttribute("stroke-linecap", cs.strokeLinecap);
+      if (cs.strokeLinejoin) el.setAttribute("stroke-linejoin", cs.strokeLinejoin);
+      if (cs.vectorEffect) el.setAttribute("vector-effect", cs.vectorEffect);
+    });
+
+    const width =
+      parseFloat(overlaySvg.getAttribute("width")) || overlayRect.width || surface.offsetWidth;
+    const height =
+      parseFloat(overlaySvg.getAttribute("height")) || overlayRect.height || surface.offsetHeight;
+
+    cloned.setAttribute("width", width);
+    cloned.setAttribute("height", height);
+
+    if (!cloned.getAttribute("viewBox")) {
+      cloned.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    }
+
+    return {
+      dataUrl: svgNodeToDataUrl(cloned),
+      left: mapPaneRect.left - mapRect.left,
+      top: mapPaneRect.top - mapRect.top,
+      width,
+      height,
+    };
+  }
+
   const doExportPNG = async () => {
     setExporting(true);
     setSelectedId(null);
@@ -662,10 +749,8 @@ export default function App() {
 
       mapRef.current?.invalidateSize();
 
-      // Give Leaflet time to fully repaint tiles + overlays
-      await new Promise((r) => setTimeout(r, 900));
+      await new Promise((r) => setTimeout(r, 1000));
 
-      // Wait for visible tile images to finish loading
       await new Promise((resolve) => {
         const imgs = Array.from(document.querySelectorAll(".leaflet-tile-container img"));
         const pending = imgs.filter((img) => !img.complete);
@@ -692,47 +777,28 @@ export default function App() {
       const surface = document.querySelector(".export-surface");
       if (!surface) throw new Error("Export surface not found.");
 
-      // Clone the Leaflet SVG overlay into the export surface because html2canvas
-      // can skip SVG vectors inside Leaflet's transformed panes.
-      const originalSvg = document.querySelector(".leaflet-overlay-pane svg");
-      let clonedSvg = null;
+      const overlayInfo = getLeafletOverlayImageInfo(mapRef.current, surface);
 
-      if (originalSvg) {
-        const mapRect = surface.getBoundingClientRect();
-        const svgRect = originalSvg.getBoundingClientRect();
-        const clonedDoc = originalSvg.cloneNode(true);
+      let overlayImgEl = null;
 
-        clonedSvg = clonedDoc;
-        clonedSvg.style.position = "absolute";
-        clonedSvg.style.left = `${svgRect.left - mapRect.left}px`;
-        clonedSvg.style.top = `${svgRect.top - mapRect.top}px`;
-        clonedSvg.style.width = `${svgRect.width}px`;
-        clonedSvg.style.height = `${svgRect.height}px`;
-        clonedSvg.style.pointerEvents = "none";
-        clonedSvg.style.zIndex = "500";
-        clonedSvg.style.overflow = "visible";
-        clonedSvg.style.visibility = "visible";
-        clonedSvg.style.display = "block";
-        clonedSvg.removeAttribute("transform");
+      if (overlayInfo?.dataUrl) {
+        await loadImage(overlayInfo.dataUrl);
 
-        clonedSvg.querySelectorAll("*").forEach((el) => {
-          const cs = window.getComputedStyle(el);
-          if (!cs) return;
+        overlayImgEl = document.createElement("img");
+        overlayImgEl.dataset.exportOverlay = "true";
+        overlayImgEl.src = overlayInfo.dataUrl;
+        overlayImgEl.alt = "";
+        overlayImgEl.setAttribute("aria-hidden", "true");
+        overlayImgEl.style.position = "absolute";
+        overlayImgEl.style.left = `${overlayInfo.left}px`;
+        overlayImgEl.style.top = `${overlayInfo.top}px`;
+        overlayImgEl.style.width = `${overlayInfo.width}px`;
+        overlayImgEl.style.height = `${overlayInfo.height}px`;
+        overlayImgEl.style.pointerEvents = "none";
+        overlayImgEl.style.zIndex = "500";
+        overlayImgEl.style.display = "block";
 
-          if (cs.fill) el.setAttribute("fill", cs.fill);
-          if (cs.stroke) el.setAttribute("stroke", cs.stroke);
-          if (cs.strokeWidth) el.setAttribute("stroke-width", cs.strokeWidth);
-          if (cs.fillOpacity) el.setAttribute("fill-opacity", cs.fillOpacity);
-          if (cs.strokeOpacity) el.setAttribute("stroke-opacity", cs.strokeOpacity);
-          if (cs.opacity) el.setAttribute("opacity", cs.opacity);
-          if (cs.strokeDasharray && cs.strokeDasharray !== "none") {
-            el.setAttribute("stroke-dasharray", cs.strokeDasharray);
-          }
-          if (cs.strokeLinecap) el.setAttribute("stroke-linecap", cs.strokeLinecap);
-          if (cs.strokeLinejoin) el.setAttribute("stroke-linejoin", cs.strokeLinejoin);
-        });
-
-        surface.appendChild(clonedSvg);
+        surface.appendChild(overlayImgEl);
       }
 
       const canvas = await window.html2canvas(surface, {
@@ -743,7 +809,6 @@ export default function App() {
         backgroundColor: "#ffffff",
         imageTimeout: 20000,
         onclone: (doc) => {
-          // Hide resize handles in the cloned DOM
           doc.querySelectorAll(".rdrag > div[style]").forEach((el) => {
             if (el.style.cursor && el.style.cursor.includes("resize")) {
               el.style.display = "none";
@@ -754,10 +819,15 @@ export default function App() {
             el.style.outline = "none";
             el.style.boxShadow = "none";
           });
+
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach((el) => {
+            el.style.display = "none";
+            el.style.visibility = "hidden";
+          });
         },
       });
 
-      if (clonedSvg) clonedSvg.remove();
+      if (overlayImgEl) overlayImgEl.remove();
 
       const a = document.createElement("a");
       a.download = `${title.toLowerCase().replace(/\s+/g, "-")}-map.png`;
@@ -766,15 +836,12 @@ export default function App() {
     } catch (err) {
       console.error(err);
       alert(
-        "PNG export failed. Street basemap is still the safer option for browser export.\n\n" + err.message
+        "PNG export failed. Browser-based satellite export can still be fragile.\n\n" + err.message
       );
     } finally {
-      document.querySelectorAll('.export-surface > svg').forEach((el) => {
-        if (el.style.position === 'absolute' && el.style.zIndex === '500' && el.style.pointerEvents === 'none') {
-          // best-effort cleanup for cloned export SVG
-          if (el.closest('.export-surface')) el.remove();
-        }
-      });
+      document
+        .querySelectorAll('.export-surface > img[data-export-overlay="true"]')
+        .forEach((el) => el.remove());
       if (sidebar) sidebar.style.display = "";
       if (mapSide) mapSide.style.width = "";
       mapRef.current?.invalidateSize();
