@@ -662,10 +662,10 @@ export default function App() {
 
       mapRef.current?.invalidateSize();
 
-      // Give Leaflet time to fully repaint tiles + SVG overlays
+      // Give Leaflet time to fully repaint tiles + overlays
       await new Promise((r) => setTimeout(r, 900));
 
-      // Wait for visible tile images to finish
+      // Wait for visible tile images to finish loading
       await new Promise((resolve) => {
         const imgs = Array.from(document.querySelectorAll(".leaflet-tile-container img"));
         const pending = imgs.filter((img) => !img.complete);
@@ -692,6 +692,49 @@ export default function App() {
       const surface = document.querySelector(".export-surface");
       if (!surface) throw new Error("Export surface not found.");
 
+      // Clone the Leaflet SVG overlay into the export surface because html2canvas
+      // can skip SVG vectors inside Leaflet's transformed panes.
+      const originalSvg = document.querySelector(".leaflet-overlay-pane svg");
+      let clonedSvg = null;
+
+      if (originalSvg) {
+        const mapRect = surface.getBoundingClientRect();
+        const svgRect = originalSvg.getBoundingClientRect();
+        const clonedDoc = originalSvg.cloneNode(true);
+
+        clonedSvg = clonedDoc;
+        clonedSvg.style.position = "absolute";
+        clonedSvg.style.left = `${svgRect.left - mapRect.left}px`;
+        clonedSvg.style.top = `${svgRect.top - mapRect.top}px`;
+        clonedSvg.style.width = `${svgRect.width}px`;
+        clonedSvg.style.height = `${svgRect.height}px`;
+        clonedSvg.style.pointerEvents = "none";
+        clonedSvg.style.zIndex = "500";
+        clonedSvg.style.overflow = "visible";
+        clonedSvg.style.visibility = "visible";
+        clonedSvg.style.display = "block";
+        clonedSvg.removeAttribute("transform");
+
+        clonedSvg.querySelectorAll("*").forEach((el) => {
+          const cs = window.getComputedStyle(el);
+          if (!cs) return;
+
+          if (cs.fill) el.setAttribute("fill", cs.fill);
+          if (cs.stroke) el.setAttribute("stroke", cs.stroke);
+          if (cs.strokeWidth) el.setAttribute("stroke-width", cs.strokeWidth);
+          if (cs.fillOpacity) el.setAttribute("fill-opacity", cs.fillOpacity);
+          if (cs.strokeOpacity) el.setAttribute("stroke-opacity", cs.strokeOpacity);
+          if (cs.opacity) el.setAttribute("opacity", cs.opacity);
+          if (cs.strokeDasharray && cs.strokeDasharray !== "none") {
+            el.setAttribute("stroke-dasharray", cs.strokeDasharray);
+          }
+          if (cs.strokeLinecap) el.setAttribute("stroke-linecap", cs.strokeLinecap);
+          if (cs.strokeLinejoin) el.setAttribute("stroke-linejoin", cs.strokeLinejoin);
+        });
+
+        surface.appendChild(clonedSvg);
+      }
+
       const canvas = await window.html2canvas(surface, {
         useCORS: true,
         allowTaint: true,
@@ -700,62 +743,21 @@ export default function App() {
         backgroundColor: "#ffffff",
         imageTimeout: 20000,
         onclone: (doc) => {
-          // Keep Leaflet transforms intact.
-          // Do NOT flatten pane transforms; that can drop or misplace SVG claim polygons.
-
-          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach((svg) => {
-            svg.style.visibility = "visible";
-            svg.style.display = "block";
-            svg.style.overflow = "visible";
-          });
-
-          doc
-            .querySelectorAll(
-              ".leaflet-overlay-pane path, .leaflet-overlay-pane polyline, .leaflet-overlay-pane polygon, .leaflet-overlay-pane circle, .leaflet-overlay-pane line"
-            )
-            .forEach((el) => {
-              const cs = doc.defaultView?.getComputedStyle(el);
-              if (!cs) return;
-
-              const fill = cs.fill;
-              const stroke = cs.stroke;
-              const strokeWidth = cs.strokeWidth;
-              const fillOpacity = cs.fillOpacity;
-              const strokeOpacity = cs.strokeOpacity;
-              const opacity = cs.opacity;
-              const dashArray = cs.strokeDasharray;
-              const lineCap = cs.strokeLinecap;
-              const lineJoin = cs.strokeLinejoin;
-
-              if (fill) el.setAttribute("fill", fill);
-              if (stroke) el.setAttribute("stroke", stroke);
-              if (strokeWidth) el.setAttribute("stroke-width", strokeWidth);
-              if (fillOpacity) el.setAttribute("fill-opacity", fillOpacity);
-              if (strokeOpacity) el.setAttribute("stroke-opacity", strokeOpacity);
-              if (opacity) el.setAttribute("opacity", opacity);
-              if (dashArray && dashArray !== "none") el.setAttribute("stroke-dasharray", dashArray);
-              if (lineCap) el.setAttribute("stroke-linecap", lineCap);
-              if (lineJoin) el.setAttribute("stroke-linejoin", lineJoin);
-
-              if (!el.getAttribute("fill") && el.tagName !== "polyline" && el.tagName !== "line") {
-                el.setAttribute("fill", "none");
-              }
-            });
-
-          // Hide resize handles
+          // Hide resize handles in the cloned DOM
           doc.querySelectorAll(".rdrag > div[style]").forEach((el) => {
             if (el.style.cursor && el.style.cursor.includes("resize")) {
               el.style.display = "none";
             }
           });
 
-          // Remove selection outlines from UI boxes only
           doc.querySelectorAll(".rdrag").forEach((el) => {
             el.style.outline = "none";
             el.style.boxShadow = "none";
           });
         },
       });
+
+      if (clonedSvg) clonedSvg.remove();
 
       const a = document.createElement("a");
       a.download = `${title.toLowerCase().replace(/\s+/g, "-")}-map.png`;
@@ -767,6 +769,12 @@ export default function App() {
         "PNG export failed. Street basemap is still the safer option for browser export.\n\n" + err.message
       );
     } finally {
+      document.querySelectorAll('.export-surface > svg').forEach((el) => {
+        if (el.style.position === 'absolute' && el.style.zIndex === '500' && el.style.pointerEvents === 'none') {
+          // best-effort cleanup for cloned export SVG
+          if (el.closest('.export-surface')) el.remove();
+        }
+      });
       if (sidebar) sidebar.style.display = "";
       if (mapSide) mapSide.style.width = "";
       mapRef.current?.invalidateSize();
