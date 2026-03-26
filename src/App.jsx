@@ -1,655 +1,204 @@
-import { useEffect, useRef, useState } from "react";
-import L from "leaflet";
-import shp from "shpjs";
-
-export default function App() {
-  const mapRef = useRef(null);
-  const containerRef = useRef(null);
-  const [layers, setLayers] = useState([]);
-  const [title, setTitle] = useState("RIFT PROJECT");
-  const [subtitle, setSubtitle] = useState("Nebraska");
-  const [logo, setLogo] = useState(null);
-  const [insetImage, setInsetImage] = useState(null);
-  const [northArrow, setNorthArrow] = useState(true);
-  const [showLegend, setShowLegend] = useState(true);
-  const [annotations, setAnnotations] = useState([]);
-  const [annotationText, setAnnotationText] = useState("");
-  const [annotationColor, setAnnotationColor] = useState("#0a2c78");
-  const [drawMode, setDrawMode] = useState("none");
-
-  useEffect(() => {
-    if (!containerRef.current || mapRef.current) return;
-
-    const map = L.map(containerRef.current).setView([40, -96], 5);
-
-    const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap contributors",
-      maxZoom: 19,
-    });
-
-    const esriSat = L.tileLayer(
-      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-      {
-        attribution: "Esri",
-        maxZoom: 19,
-      }
-    );
-
-    esriSat.addTo(map);
-    map._baseLayers = { osm, esriSat };
-    map._activeBase = esriSat;
-
-    L.control.scale({ imperial: false }).addTo(map);
-
-    mapRef.current = map;
-
-    setTimeout(() => map.invalidateSize(), 100);
-
-    return () => {
-      if (mapRef.current) {
-        mapRef.current.remove();
-        mapRef.current = null;
-      }
-    };
-  }, []);
-
-  const addLayer = (geojson, name) => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    const styleDefaults = {
-      color: "#4e8cff",
-      weight: 2,
-      fillOpacity: 0.25,
-      fillColor: "#4e8cff",
-    };
-
-    const layer = L.geoJSON(geojson, {
-      style: () => styleDefaults,
-      pointToLayer: (_, latlng) =>
-        L.circleMarker(latlng, {
-          radius: 5,
-          color: "#000000",
-          weight: 1.5,
-          fillColor: "#000000",
-          fillOpacity: 1,
-        }),
-      onEachFeature: (feature, l) => {
-        const props = feature.properties || {};
-        const content = Object.keys(props).length
-          ? `<pre style="margin:0;font-size:11px;">${escapeHtml(
-              JSON.stringify(props, null, 2)
-            )}</pre>`
-          : "No attributes";
-        l.bindPopup(content);
-      },
-    }).addTo(map);
-
-    try {
-      const bounds = layer.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [20, 20] });
-      }
-    } catch {}
-
-    setLayers((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        name,
-        layer,
-        visible: true,
-        color: "#4e8cff",
-        fillColor: "#4e8cff",
-        fillOpacity: 0.25,
-        weight: 2,
-        pointRadius: 5,
-        legendLabel: name,
-        includeInLegend: true,
-      },
-    ]);
-  };
-
-  const handleFile = async (file) => {
-    if (!file) return;
-    try {
-      if (file.name.endsWith(".zip")) {
-        const buffer = await file.arrayBuffer();
-        const geojson = await shp(buffer);
-        addLayer(geojson, file.name);
-        return;
-      }
-
-      if (file.name.endsWith(".geojson") || file.name.endsWith(".json")) {
-        const text = await file.text();
-        addLayer(JSON.parse(text), file.name);
-        return;
-      }
-
-      if (file.name.endsWith(".csv")) {
-        const text = await file.text();
-        const geojson = csvToGeoJSON(text);
-        addLayer(geojson, file.name);
-        return;
-      }
-
-      alert("Supported: .zip, .geojson, .json, .csv");
-    } catch (err) {
-      console.error(err);
-      alert(`Import failed: ${err.message}`);
-    }
-  };
-
-  const updateLayerStyle = (id, patch) => {
-    setLayers((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item;
-
-        const updated = { ...item, ...patch };
-
-        item.layer.setStyle?.({
-          color: updated.color,
-          weight: Number(updated.weight),
-          fillColor: updated.fillColor,
-          fillOpacity: Number(updated.fillOpacity),
-        });
-
-        item.layer.eachLayer?.((sub) => {
-          if (sub instanceof L.CircleMarker) {
-            sub.setStyle({
-              radius: Number(updated.pointRadius),
-              color: updated.color,
-              fillColor: updated.fillColor,
-            });
-          }
-        });
-
-        return updated;
-      })
-    );
-  };
-
-  const toggleLayer = (id) => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    setLayers((prev) =>
-      prev.map((item) => {
-        if (item.id !== id) return item;
-
-        if (item.visible) {
-          map.removeLayer(item.layer);
-        } else {
-          item.layer.addTo(map);
-        }
-
-        return { ...item, visible: !item.visible };
-      })
-    );
-  };
-
-  const removeLayer = (id) => {
-    const map = mapRef.current;
-    if (!map) return;
-
-    setLayers((prev) => {
-      const target = prev.find((l) => l.id === id);
-      if (target) map.removeLayer(target.layer);
-      return prev.filter((l) => l.id !== id);
-    });
-  };
-
-  const fitAll = () => {
-    const map = mapRef.current;
-    if (!map) return;
-    const visible = layers.filter((l) => l.visible).map((l) => l.layer);
-    if (!visible.length) return;
-    const fg = L.featureGroup(visible);
-    const bounds = fg.getBounds();
-    if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
-  };
-
-  const switchBasemap = (type) => {
-    const map = mapRef.current;
-    if (!map) return;
-    const { osm, esriSat } = map._baseLayers;
-    if (map._activeBase) map.removeLayer(map._activeBase);
-    const next = type === "osm" ? osm : esriSat;
-    next.addTo(map);
-    map._activeBase = next;
-  };
-
-  const addAnnotation = () => {
-    if (!annotationText.trim()) return;
-    setAnnotations((prev) => [
-      ...prev,
-      {
-        id: crypto.randomUUID(),
-        text: annotationText,
-        color: annotationColor,
-        x: 40,
-        y: 120 + prev.length * 60,
-      },
-    ]);
-    setAnnotationText("");
-  };
-
-  const updateAnnotation = (id, patch) => {
-    setAnnotations((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, ...patch } : a))
-    );
-  };
-
-  const removeAnnotation = (id) => {
-    setAnnotations((prev) => prev.filter((a) => a.id !== id));
-  };
-
-  const exportSVG = () => {
-    const mapWrap = document.querySelector(".export-surface");
-    const overlaySvg = mapWrap?.querySelector(".leaflet-overlay-pane svg");
-    const width = mapWrap?.offsetWidth || 1200;
-    const height = mapWrap?.offsetHeight || 800;
-
-    let overlayMarkup = "";
-    if (overlaySvg) {
-      overlayMarkup = new XMLSerializer().serializeToString(overlaySvg);
-      overlayMarkup = overlayMarkup
-        .replace(/^<svg[^>]*>/, `<g transform="translate(0,0)">`)
-        .replace(/<\/svg>$/, "</g>");
-    }
-
-    const legendItems = layers
-      .filter((l) => l.includeInLegend)
-      .map(
-        (l, i) => `
-        <g transform="translate(20, ${height - 180 + i * 26})">
-          <rect x="0" y="0" width="18" height="18" fill="${l.fillColor}" fill-opacity="${l.fillOpacity}" stroke="${l.color}" stroke-width="${l.weight}" />
-          <text x="28" y="14" font-size="18" font-family="Arial" fill="#111">${escapeXml(l.legendLabel)}</text>
-        </g>
-      `
-      )
-      .join("");
-
-    const annotationMarkup = annotations
-      .map(
-        (a) => `
-        <g transform="translate(${a.x},${a.y})">
-          <rect x="0" y="0" rx="4" ry="4" width="260" height="44" fill="${a.color}" opacity="0.95"/>
-          <text x="14" y="28" font-size="20" font-family="Arial" fill="#fff">${escapeXml(a.text)}</text>
-        </g>
-      `
-      )
-      .join("");
-
-    const logoMarkup = logo
-      ? `<image href="${logo}" x="${width - 210}" y="20" width="180" height="70" preserveAspectRatio="xMidYMid meet" />`
-      : "";
-
-    const insetMarkup = insetImage
-      ? `<image href="${insetImage}" x="${width - 220}" y="100" width="190" height="190" preserveAspectRatio="xMidYMid meet" />`
-      : "";
-
-    const northMarkup = northArrow
-      ? `
-      <g transform="translate(40,40)">
-        <text x="18" y="-8" font-size="18" font-family="Arial" fill="#111">N</text>
-        <polygon points="20,0 28,28 20,22 12,28" fill="#111"/>
-        <polygon points="20,40 28,12 20,18 12,12" fill="#111"/>
-        <polygon points="0,20 28,12 22,20 28,28" fill="#111"/>
-        <polygon points="40,20 12,12 18,20 12,28" fill="#111"/>
-      </g>`
-      : "";
-
-    const svg = `
-      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">
-        <rect width="${width}" height="${height}" fill="#ffffff"/>
-        ${overlayMarkup}
-        <g>
-          <rect x="${width - 320}" y="20" width="300" height="58" fill="#0a2c78" opacity="0.95"/>
-          <text x="${width - 300}" y="55" font-size="34" font-family="Arial" fill="#fff" font-weight="700">${escapeXml(
-            title
-          )}</text>
-          <text x="${width - 300}" y="78" font-size="18" font-family="Arial" fill="#fff">${escapeXml(
-            subtitle
-          )}</text>
-        </g>
-        ${
-          showLegend
-            ? `
-          <g>
-            <rect x="10" y="${height - 210}" width="420" height="190" fill="#fff" opacity="0.95" stroke="#222"/>
-            ${legendItems}
-          </g>
-        `
-            : ""
-        }
-        ${logoMarkup}
-        ${insetMarkup}
-        ${northMarkup}
-        ${annotationMarkup}
-      </svg>
-    `;
-
-    const blob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "map-export.svg";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
-  return (
-    <div className="app-shell">
-      <div className="sidebar">
-        <h2>Mapviewer</h2>
-
-        <div className="group">
-          <label>Upload GIS</label>
-          <input
-            type="file"
-            accept=".zip,.geojson,.json,.csv"
-            onChange={(e) => handleFile(e.target.files?.[0])}
-          />
-        </div>
-
-        <div className="group">
-          <label>Title</label>
-          <input value={title} onChange={(e) => setTitle(e.target.value)} />
-          <label>Subtitle</label>
-          <input value={subtitle} onChange={(e) => setSubtitle(e.target.value)} />
-        </div>
-
-        <div className="group">
-          <label>Logo</label>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => loadImage(e.target.files?.[0], setLogo)}
-          />
-          <label>Inset Image</label>
-          <input
-            type="file"
-            accept="image/*"
-            onChange={(e) => loadImage(e.target.files?.[0], setInsetImage)}
-          />
-        </div>
-
-        <div className="group">
-          <label>Basemap</label>
-          <div className="row">
-            <button onClick={() => switchBasemap("sat")}>Satellite</button>
-            <button onClick={() => switchBasemap("osm")}>Street</button>
-          </div>
-        </div>
-
-        <div className="group">
-          <label>
-            <input
-              type="checkbox"
-              checked={northArrow}
-              onChange={(e) => setNorthArrow(e.target.checked)}
-            />
-            Show North Arrow
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={showLegend}
-              onChange={(e) => setShowLegend(e.target.checked)}
-            />
-            Show Legend
-          </label>
-        </div>
-
-        <div className="group">
-          <label>Add Annotation</label>
-          <input
-            value={annotationText}
-            onChange={(e) => setAnnotationText(e.target.value)}
-            placeholder="~$1B USD MARKET CAP"
-          />
-          <input
-            type="color"
-            value={annotationColor}
-            onChange={(e) => setAnnotationColor(e.target.value)}
-          />
-          <button onClick={addAnnotation}>Add Annotation Box</button>
-        </div>
-
-        <div className="group">
-          <button onClick={fitAll}>Fit All</button>
-          <button onClick={exportSVG}>Export SVG</button>
-        </div>
-
-        <div className="group">
-          <h3>Layers</h3>
-          {layers.length === 0 ? (
-            <div className="empty">No layers loaded</div>
-          ) : (
-            layers.map((l) => (
-              <div key={l.id} className="layer-card">
-                <strong>{l.name}</strong>
-
-                <label>Legend Label</label>
-                <input
-                  value={l.legendLabel}
-                  onChange={(e) =>
-                    updateLayerStyle(l.id, { legendLabel: e.target.value })
-                  }
-                />
-
-                <div className="row">
-                  <div>
-                    <label>Stroke</label>
-                    <input
-                      type="color"
-                      value={l.color}
-                      onChange={(e) =>
-                        updateLayerStyle(l.id, { color: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <label>Fill</label>
-                    <input
-                      type="color"
-                      value={l.fillColor}
-                      onChange={(e) =>
-                        updateLayerStyle(l.id, { fillColor: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-
-                <label>Fill Opacity</label>
-                <input
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={l.fillOpacity}
-                  onChange={(e) =>
-                    updateLayerStyle(l.id, { fillOpacity: e.target.value })
-                  }
-                />
-
-                <label>Line Weight</label>
-                <input
-                  type="range"
-                  min="1"
-                  max="8"
-                  step="1"
-                  value={l.weight}
-                  onChange={(e) =>
-                    updateLayerStyle(l.id, { weight: e.target.value })
-                  }
-                />
-
-                <label>Point Radius</label>
-                <input
-                  type="range"
-                  min="2"
-                  max="12"
-                  step="1"
-                  value={l.pointRadius}
-                  onChange={(e) =>
-                    updateLayerStyle(l.id, { pointRadius: e.target.value })
-                  }
-                />
-
-                <label>
-                  <input
-                    type="checkbox"
-                    checked={l.includeInLegend}
-                    onChange={(e) =>
-                      updateLayerStyle(l.id, { includeInLegend: e.target.checked })
-                    }
-                  />
-                  Include in legend
-                </label>
-
-                <div className="row">
-                  <button onClick={() => toggleLayer(l.id)}>
-                    {l.visible ? "Hide" : "Show"}
-                  </button>
-                  <button onClick={() => removeLayer(l.id)}>Remove</button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div className="group">
-          <h3>Annotations</h3>
-          {annotations.length === 0 ? (
-            <div className="empty">No annotations</div>
-          ) : (
-            annotations.map((a) => (
-              <div key={a.id} className="layer-card">
-                <input
-                  value={a.text}
-                  onChange={(e) => updateAnnotation(a.id, { text: e.target.value })}
-                />
-                <input
-                  type="color"
-                  value={a.color}
-                  onChange={(e) => updateAnnotation(a.id, { color: e.target.value })}
-                />
-                <label>X</label>
-                <input
-                  type="number"
-                  value={a.x}
-                  onChange={(e) => updateAnnotation(a.id, { x: Number(e.target.value) })}
-                />
-                <label>Y</label>
-                <input
-                  type="number"
-                  value={a.y}
-                  onChange={(e) => updateAnnotation(a.id, { y: Number(e.target.value) })}
-                />
-                <button onClick={() => removeAnnotation(a.id)}>Delete</button>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      <div className="map-side export-surface">
-        <div className="title-block">
-          <div className="title-main">{title}</div>
-          <div className="title-sub">{subtitle}</div>
-        </div>
-
-        {logo ? <img src={logo} alt="Logo" className="logo-block" /> : null}
-        {insetImage ? <img src={insetImage} alt="Inset" className="inset-block" /> : null}
-        {northArrow ? <div className="north-arrow">N</div> : null}
-
-        <div ref={containerRef} id="map" />
-
-        {showLegend ? (
-          <div className="legend-block">
-            {layers
-              .filter((l) => l.includeInLegend)
-              .map((l) => (
-                <div className="legend-row" key={l.id}>
-                  <span
-                    className="legend-swatch"
-                    style={{
-                      background: l.fillColor,
-                      opacity: l.fillOpacity,
-                      border: `${l.weight}px solid ${l.color}`,
-                    }}
-                  />
-                  <span>{l.legendLabel}</span>
-                </div>
-              ))}
-          </div>
-        ) : null}
-
-        {annotations.map((a) => (
-          <div
-            key={a.id}
-            className="annotation-box"
-            style={{ left: a.x, top: a.y, background: a.color }}
-          >
-            {a.text}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body, #root {
+  height: 100%;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-size: 13px;
+  background: #0d1117;
+  color: #e2e8f0;
 }
 
-function loadImage(file, setter) {
-  if (!file) return;
-  const reader = new FileReader();
-  reader.onload = () => setter(reader.result);
-  reader.readAsDataURL(file);
+.app-shell { display: flex; height: 100%; width: 100%; overflow: hidden; }
+
+.sidebar {
+  width: 300px; min-width: 300px;
+  background: #111318;
+  border-right: 1px solid #1e2330;
+  display: flex; flex-direction: column;
+  overflow-y: auto; overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: #2a3045 transparent;
 }
 
-function csvToGeoJSON(text) {
-  const lines = text.trim().split("\\n");
-  const headers = lines[0].split(",").map((h) => h.trim());
-  const latIndex = headers.findIndex((h) => /lat/i.test(h));
-  const lngIndex = headers.findIndex((h) => /lon|lng|long/i.test(h));
-
-  if (latIndex === -1 || lngIndex === -1) {
-    throw new Error("CSV must include lat and lng/lon columns.");
-  }
-
-  const features = lines.slice(1).map((line) => {
-    const parts = line.split(",");
-    const props = {};
-    headers.forEach((h, i) => {
-      props[h] = parts[i];
-    });
-
-    return {
-      type: "Feature",
-      geometry: {
-        type: "Point",
-        coordinates: [Number(parts[lngIndex]), Number(parts[latIndex])],
-      },
-      properties: props,
-    };
-  });
-
-  return { type: "FeatureCollection", features };
+.sidebar-header {
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid #1e2330;
+  position: sticky; top: 0; z-index: 10;
+  background: #111318;
 }
 
-function escapeXml(str) {
-  return String(str)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&apos;");
+.app-wordmark { font-size: 15px; font-weight: 700; letter-spacing: 0.04em; color: #e2e8f0; }
+
+.sec { padding: 14px 16px; border-bottom: 1px solid #1a1f2e; }
+
+.sec-title {
+  font-size: 10px; font-weight: 700;
+  letter-spacing: 0.1em; text-transform: uppercase;
+  color: #4b5a7a; margin-bottom: 10px;
 }
 
-function escapeHtml(str) {
-  return String(str)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+.field { margin-bottom: 10px; }
+.field:last-child { margin-bottom: 0; }
+.field-label { font-size: 11px; color: #8896b0; margin-bottom: 5px; font-weight: 500; }
+
+input:not([type="checkbox"]):not([type="color"]):not([type="range"]):not([type="file"]),
+select {
+  width: 100%;
+  background: #181d28; border: 1px solid #252e42;
+  color: #e2e8f0; padding: 7px 9px;
+  border-radius: 5px; font-size: 12px;
+  font-family: inherit; outline: none;
+  transition: border-color 0.15s;
+}
+input:not([type="checkbox"]):not([type="color"]):not([type="range"]):not([type="file"]):focus,
+select:focus { border-color: #3b5bdb; }
+
+input[type="range"] { width: 100%; accent-color: #3b5bdb; cursor: pointer; }
+input[type="color"] { width: 36px; height: 28px; border: 1px solid #252e42; border-radius: 4px; background: none; cursor: pointer; padding: 2px; }
+input[type="file"] { font-size: 11px; color: #8896b0; width: 100%; }
+select { cursor: pointer; }
+
+.file-drop {
+  display: block; border: 1.5px dashed #252e42;
+  border-radius: 6px; padding: 14px 12px;
+  text-align: center; cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.file-drop:hover { border-color: #3b5bdb; background: #161b28; }
+.file-drop input { display: none; }
+.file-drop-hint { color: #8896b0; font-size: 12px; line-height: 1.6; }
+.file-drop-hint small { color: #4b5a7a; }
+
+.btn {
+  flex: 1; background: #181d28; border: 1px solid #252e42;
+  color: #c8d3e8; padding: 7px 10px; border-radius: 5px;
+  cursor: pointer; font-size: 12px; font-family: inherit;
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover { background: #1e2535; border-color: #3a4560; }
+
+.btn-export {
+  width: 100%; background: #1b3a6b; border-color: #2a5298;
+  color: #a8c4f0; font-weight: 600; padding: 9px;
+}
+.btn-export:hover { background: #213f7a; }
+.btn-export:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.btn-placing {
+  background: #1a3a1a !important; border-color: #2e6b2e !important;
+  color: #7cc67c !important; animation: pulse-border 1.2s infinite;
+}
+@keyframes pulse-border {
+  0%, 100% { border-color: #2e6b2e; }
+  50% { border-color: #5cb85c; }
+}
+
+.btn-ghost { background: none; border: none; color: #c05050; font-size: 11px; cursor: pointer; padding: 4px 0; }
+.btn-ghost:hover { color: #e06060; }
+
+.btn-icon-sm {
+  background: none; border: none; color: #4b5a7a;
+  cursor: pointer; font-size: 13px; padding: 2px 4px;
+  line-height: 1; border-radius: 3px; transition: color 0.12s;
+}
+.btn-icon-sm:hover { color: #c8d3e8; }
+
+.btn-chevron { background: none; border: none; color: #4b5a7a; cursor: pointer; font-size: 11px; padding: 2px 4px; line-height: 1; }
+.btn-chevron:hover { color: #c8d3e8; }
+
+.row2 { display: flex; gap: 7px; }
+
+.toggle-row {
+  display: flex; align-items: center; gap: 9px;
+  cursor: pointer; margin-bottom: 8px;
+  font-size: 12px; color: #b0bdd4; user-select: none;
+}
+.toggle-row:last-child { margin-bottom: 0; }
+
+.toggle-track {
+  width: 30px; height: 16px; background: #252e42;
+  border-radius: 8px; position: relative;
+  transition: background 0.18s; flex-shrink: 0;
+}
+.toggle-track.on { background: #3b5bdb; }
+.toggle-thumb {
+  position: absolute; top: 2px; left: 2px;
+  width: 12px; height: 12px; border-radius: 50%;
+  background: #e2e8f0; transition: transform 0.18s;
+}
+.toggle-track.on .toggle-thumb { transform: translateX(14px); }
+
+.color-trio { display: flex; gap: 8px; margin-bottom: 10px; }
+.color-trio > div { flex: 1; }
+
+.color-pick-row {
+  display: flex; align-items: center;
+  justify-content: space-between;
+  margin-top: 6px; font-size: 11px; color: #8896b0;
+}
+
+.annot-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.annot-row { display: flex; align-items: center; gap: 6px; }
+.annot-swatch { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+.annot-row input { flex: 1; }
+
+.layer-card { border: 1px solid #1e2330; border-radius: 6px; margin-bottom: 8px; overflow: hidden; background: #14181f; }
+.layer-card.open { border-color: #2a3452; }
+.layer-card-header { display: flex; align-items: center; gap: 4px; padding: 8px 10px; }
+.layer-card-name { flex: 1; font-size: 12px; color: #c8d3e8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.layer-card-body { padding: 10px 12px 12px; border-top: 1px solid #1e2330; background: #0f1318; }
+
+.empty-hint { color: #4b5a7a; font-size: 12px; line-height: 1.6; text-align: center; padding: 10px 0; }
+
+.map-side { flex: 1; position: relative; background: #2c3340; overflow: hidden; }
+#map { width: 100%; height: 100%; }
+
+.title-block {
+  position: absolute; top: 18px; right: 18px; z-index: 1000;
+  background: rgba(8, 30, 92, 0.96); color: #fff;
+  padding: 12px 18px 10px; min-width: 210px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+}
+.title-main { font-size: 20px; font-weight: 800; letter-spacing: 0.03em; line-height: 1.1; }
+.title-sub { font-size: 12px; margin-top: 4px; opacity: 0.75; letter-spacing: 0.06em; text-transform: uppercase; }
+
+.logo-block {
+  position: absolute; top: 18px; right: 248px; z-index: 1000;
+  max-width: 160px; max-height: 64px;
+  background: rgba(255,255,255,0.9); padding: 6px 8px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+}
+
+.north-arrow {
+  position: absolute; top: 20px; left: 20px; z-index: 1000;
+  width: 44px; height: 44px;
+  background: rgba(255,255,255,0.88); border: 1px solid #aaa;
+  border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+}
+
+.inset-map {
+  position: absolute; top: 80px; right: 18px; z-index: 1000;
+  width: 190px; height: 140px;
+  border: 1.5px solid #7a8fa8;
+  box-shadow: 0 3px 10px rgba(0,0,0,0.3);
+  background: #cdd9e5; pointer-events: none;
+}
+
+.legend-block {
+  position: absolute; bottom: 30px; left: 16px; z-index: 1000;
+  background: rgba(255,255,255,0.96); border: 1px solid #b8c4ce;
+  padding: 10px 14px; min-width: 200px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+}
+.legend-row { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; color: #1a2232; font-size: 13px; }
+.legend-row:last-child { margin-bottom: 0; }
+.legend-swatch { width: 18px; height: 18px; flex-shrink: 0; display: inline-block; }
+
+.annotation-box {
+  position: absolute; z-index: 1000;
+  color: #fff; font-weight: 700; font-size: 14px;
+  padding: 8px 14px; box-shadow: 0 3px 12px rgba(0,0,0,0.28);
+  max-width: 280px; white-space: pre-wrap;
+  pointer-events: none; letter-spacing: 0.01em;
 }
