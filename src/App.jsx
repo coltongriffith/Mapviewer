@@ -478,6 +478,7 @@ export default function App() {
     else if(cfg.fillPattern==="solid") fillStyle={fill:true,fillColor:cfg.fillColor,fillOpacity:+cfg.fillOpacity};
     else                               fillStyle={fill:true,fillColor:`url(#mvp-${cfg.fillPattern})`,fillOpacity:1};
     return L.geoJSON(geojson,{
+      renderer: L.svg(),
       style:()=>({color:cfg.color,weight:+cfg.weight,opacity:+cfg.layerOpacity,dashArray:cfg.dashArray||undefined,lineCap:"round",lineJoin:"round",...fillStyle}),
       pointToLayer:(_,latlng)=>L.marker(latlng,{icon:makeMarkerIcon(cfg.markerType,cfg.markerColor,+cfg.pointRadius*2),opacity:+cfg.layerOpacity}),
       onEachFeature:(feature,l)=>{
@@ -646,60 +647,133 @@ export default function App() {
   };
 
   // ── PNG Export ────────────────────────────────────────────────────────────
-  const doExportPNG=async()=>{
+  const doExportPNG = async () => {
     setExporting(true);
     setSelectedId(null);
-    const sidebar=document.querySelector(".sidebar");
-    const mapSide=document.querySelector(".map-side");
-    try{
+
+    const sidebar = document.querySelector(".sidebar");
+    const mapSide = document.querySelector(".map-side");
+
+    try {
       await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
-      if(sidebar) sidebar.style.display="none";
-      if(mapSide) mapSide.style.width="100vw";
-      mapRef.current.invalidateSize();
-      await new Promise(r=>setTimeout(r,700));
-      await new Promise(resolve=>{
-        let total=0,done=0;
-        document.querySelectorAll(".leaflet-tile-container img").forEach(img=>{
-          if(!img.complete){total++;img.addEventListener("load",()=>{done++;if(done>=total)resolve();},{once:true});img.addEventListener("error",()=>{done++;if(done>=total)resolve();},{once:true});}
+
+      if (sidebar) sidebar.style.display = "none";
+      if (mapSide) mapSide.style.width = "100vw";
+
+      mapRef.current?.invalidateSize();
+
+      // Give Leaflet time to fully repaint tiles + SVG overlays
+      await new Promise((r) => setTimeout(r, 900));
+
+      // Wait for visible tile images to finish
+      await new Promise((resolve) => {
+        const imgs = Array.from(document.querySelectorAll(".leaflet-tile-container img"));
+        const pending = imgs.filter((img) => !img.complete);
+
+        if (!pending.length) {
+          resolve();
+          return;
+        }
+
+        let done = 0;
+        const finish = () => {
+          done += 1;
+          if (done >= pending.length) resolve();
+        };
+
+        pending.forEach((img) => {
+          img.addEventListener("load", finish, { once: true });
+          img.addEventListener("error", finish, { once: true });
         });
-        if(!total)resolve(); setTimeout(resolve,8000);
+
+        setTimeout(resolve, 8000);
       });
-      const surface=document.querySelector(".export-surface");
-      const canvas=await window.html2canvas(surface,{
-        useCORS:true,allowTaint:true,scale:exportScale,logging:false,backgroundColor:"#ffffff",imageTimeout:20000,
-        onclone:(doc)=>{
-          ["leaflet-map-pane","leaflet-tile-pane","leaflet-overlay-pane","leaflet-shadow-pane","leaflet-marker-pane","leaflet-tooltip-pane"].forEach(cls=>{
-            doc.querySelectorAll(`.${cls}`).forEach(el=>{
-              const t=el.style.transform;
-              if(t){
-                const m=t.match(/translate3d\(([^,]+),\s*([^,]+),/)||t.match(/translate\(([^,]+),\s*([^)]+)\)/);
-                if(m){el.style.transform="none";el.style.left=(parseFloat(m[1])||0)+"px";el.style.top=(parseFloat(m[2])||0)+"px";}
+
+      const surface = document.querySelector(".export-surface");
+      if (!surface) throw new Error("Export surface not found.");
+
+      const canvas = await window.html2canvas(surface, {
+        useCORS: true,
+        allowTaint: true,
+        scale: exportScale,
+        logging: false,
+        backgroundColor: "#ffffff",
+        imageTimeout: 20000,
+        onclone: (doc) => {
+          // Keep Leaflet transforms intact.
+          // Do NOT flatten pane transforms; that can drop or misplace SVG claim polygons.
+
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach((svg) => {
+            svg.style.visibility = "visible";
+            svg.style.display = "block";
+            svg.style.overflow = "visible";
+          });
+
+          doc
+            .querySelectorAll(
+              ".leaflet-overlay-pane path, .leaflet-overlay-pane polyline, .leaflet-overlay-pane polygon, .leaflet-overlay-pane circle, .leaflet-overlay-pane line"
+            )
+            .forEach((el) => {
+              const cs = doc.defaultView?.getComputedStyle(el);
+              if (!cs) return;
+
+              const fill = cs.fill;
+              const stroke = cs.stroke;
+              const strokeWidth = cs.strokeWidth;
+              const fillOpacity = cs.fillOpacity;
+              const strokeOpacity = cs.strokeOpacity;
+              const opacity = cs.opacity;
+              const dashArray = cs.strokeDasharray;
+              const lineCap = cs.strokeLinecap;
+              const lineJoin = cs.strokeLinejoin;
+
+              if (fill) el.setAttribute("fill", fill);
+              if (stroke) el.setAttribute("stroke", stroke);
+              if (strokeWidth) el.setAttribute("stroke-width", strokeWidth);
+              if (fillOpacity) el.setAttribute("fill-opacity", fillOpacity);
+              if (strokeOpacity) el.setAttribute("stroke-opacity", strokeOpacity);
+              if (opacity) el.setAttribute("opacity", opacity);
+              if (dashArray && dashArray !== "none") el.setAttribute("stroke-dasharray", dashArray);
+              if (lineCap) el.setAttribute("stroke-linecap", lineCap);
+              if (lineJoin) el.setAttribute("stroke-linejoin", lineJoin);
+
+              if (!el.getAttribute("fill") && el.tagName !== "polyline" && el.tagName !== "line") {
+                el.setAttribute("fill", "none");
               }
             });
+
+          // Hide resize handles
+          doc.querySelectorAll(".rdrag > div[style]").forEach((el) => {
+            if (el.style.cursor && el.style.cursor.includes("resize")) {
+              el.style.display = "none";
+            }
           });
-          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(el=>{el.style.visibility="visible";el.style.display="block";el.style.overflow="visible";});
-          // Hide resize handles and selection borders
-          doc.querySelectorAll(".rdrag > div[style]").forEach(el=>{
-            if(el.style.cursor&&el.style.cursor.includes("resize")) el.style.display="none";
+
+          // Remove selection outlines from UI boxes only
+          doc.querySelectorAll(".rdrag").forEach((el) => {
+            el.style.outline = "none";
+            el.style.boxShadow = "none";
           });
-          doc.querySelectorAll("[style*='dashed']").forEach(el=>{ el.style.borderStyle="none"; });
         },
       });
-      const a=document.createElement("a");
-      a.download=`${title.toLowerCase().replace(/\s+/g,"-")}-map.png`;
-      a.href=canvas.toDataURL("image/png"); a.click();
-    }catch(err){
+
+      const a = document.createElement("a");
+      a.download = `${title.toLowerCase().replace(/\s+/g, "-")}-map.png`;
+      a.href = canvas.toDataURL("image/png");
+      a.click();
+    } catch (err) {
       console.error(err);
-      alert("PNG export failed. Switch to 🗺 Street basemap — satellite tiles block cross-origin capture.\n\n"+err.message);
-    }finally{
-      if(sidebar) sidebar.style.display="";
-      if(mapSide) mapSide.style.width="";
+      alert(
+        "PNG export failed. Street basemap is still the safer option for browser export.\n\n" + err.message
+      );
+    } finally {
+      if (sidebar) sidebar.style.display = "";
+      if (mapSide) mapSide.style.width = "";
       mapRef.current?.invalidateSize();
       setExporting(false);
     }
   };
 
-  // ── SVG Export ────────────────────────────────────────────────────────────
   const doExportSVG=()=>{
     const map=mapRef.current; if(!map) return;
     const surface=document.querySelector(".export-surface");
