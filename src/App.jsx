@@ -683,17 +683,25 @@ export default function App() {
     const overlaySvg = overlayPane?.querySelector("svg");
     if (!overlaySvg) return null;
 
-    const mapPane = map.getPanes().mapPane;
-    const mapRect = surface.getBoundingClientRect();
-    const mapPaneRect = mapPane.getBoundingClientRect();
+    const surfaceRect = surface.getBoundingClientRect();
     const overlayRect = overlaySvg.getBoundingClientRect();
+
+    const intrinsicWidth =
+      parseFloat(overlaySvg.getAttribute("width")) || overlayRect.width || surface.offsetWidth;
+    const intrinsicHeight =
+      parseFloat(overlaySvg.getAttribute("height")) || overlayRect.height || surface.offsetHeight;
+
+    const renderLeft = overlayRect.left - surfaceRect.left;
+    const renderTop = overlayRect.top - surfaceRect.top;
+    const renderWidth = overlayRect.width;
+    const renderHeight = overlayRect.height;
 
     const cloned = overlaySvg.cloneNode(true);
 
     cloned.removeAttribute("style");
     cloned.style.display = "block";
     cloned.style.visibility = "visible";
-    cloned.style.overflow = "visible";
+    cloned.style.overflow = "hidden";
 
     cloned.querySelectorAll("*").forEach((el) => {
       const cs = window.getComputedStyle(el);
@@ -713,24 +721,19 @@ export default function App() {
       if (cs.vectorEffect) el.setAttribute("vector-effect", cs.vectorEffect);
     });
 
-    const width =
-      parseFloat(overlaySvg.getAttribute("width")) || overlayRect.width || surface.offsetWidth;
-    const height =
-      parseFloat(overlaySvg.getAttribute("height")) || overlayRect.height || surface.offsetHeight;
-
-    cloned.setAttribute("width", width);
-    cloned.setAttribute("height", height);
+    cloned.setAttribute("width", intrinsicWidth);
+    cloned.setAttribute("height", intrinsicHeight);
 
     if (!cloned.getAttribute("viewBox")) {
-      cloned.setAttribute("viewBox", `0 0 ${width} ${height}`);
+      cloned.setAttribute("viewBox", `0 0 ${intrinsicWidth} ${intrinsicHeight}`);
     }
 
     return {
       dataUrl: svgNodeToDataUrl(cloned),
-      left: mapPaneRect.left - mapRect.left,
-      top: mapPaneRect.top - mapRect.top,
-      width,
-      height,
+      left: renderLeft,
+      top: renderTop,
+      width: renderWidth,
+      height: renderHeight,
     };
   }
 
