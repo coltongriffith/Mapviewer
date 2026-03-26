@@ -3,197 +3,145 @@ import L from "leaflet";
 import shp from "shpjs";
 
 export default function App() {
-  const mapContainerRef = useRef(null);
-  const mapInstanceRef = useRef(null);
+  const mapRef = useRef(null);
+  const containerRef = useRef(null);
   const [layers, setLayers] = useState([]);
+  const [title, setTitle] = useState("Map Title");
+  const [subtitle, setSubtitle] = useState("Subtitle");
+  const [logo, setLogo] = useState(null);
 
   useEffect(() => {
-    if (!mapContainerRef.current || mapInstanceRef.current) return;
+    if (!containerRef.current || mapRef.current) return;
 
-    const map = L.map(mapContainerRef.current).setView([40, -96], 5);
+    const map = L.map(containerRef.current).setView([40, -96], 5);
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: "&copy; OpenStreetMap contributors",
-      maxZoom: 19,
-    }).addTo(map);
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png").addTo(map);
 
-    mapInstanceRef.current = map;
+    L.control.scale().addTo(map);
 
-    setTimeout(() => {
-      map.invalidateSize();
-    }, 100);
-
-    return () => {
-      if (mapInstanceRef.current) {
-        mapInstanceRef.current.remove();
-        mapInstanceRef.current = null;
-      }
-    };
+    mapRef.current = map;
   }, []);
 
   const addLayer = (geojson, name) => {
-    const map = mapInstanceRef.current;
-    if (!map) return;
-
-    const style = {
-      color: "#c8f04a",
-      weight: 2,
-      fillOpacity: 0.3,
-    };
-
-    const pointToLayer = (_, latlng) =>
-      L.circleMarker(latlng, {
-        radius: 5,
-        color: "#4ab8ff",
-        weight: 1.5,
-        fillOpacity: 0.7,
-      });
+    const map = mapRef.current;
 
     const layer = L.geoJSON(geojson, {
-      style,
-      pointToLayer,
+      style: {
+        color: "#c8f04a",
+        weight: 2,
+        fillOpacity: 0.3,
+      },
     }).addTo(map);
 
-    try {
-      const bounds = layer.getBounds();
-      if (bounds.isValid()) {
-        map.fitBounds(bounds, { padding: [20, 20] });
-      }
-    } catch {}
+    setLayers(prev => [...prev, {
+      id: Date.now(),
+      name,
+      layer,
+      color: "#c8f04a",
+      opacity: 0.3
+    }]);
 
-    setLayers((prev) => [
-      ...prev,
-      { id: `${name}-${Date.now()}`, name, layer, visible: true },
-    ]);
+    map.fitBounds(layer.getBounds());
   };
 
   const handleFile = async (file) => {
-    const map = mapInstanceRef.current;
-    if (!file || !map) return;
+    if (!file) return;
 
-    try {
-      if (file.name.endsWith(".zip")) {
-        const buffer = await file.arrayBuffer();
-        const geojson = await shp(buffer);
-        addLayer(geojson, file.name);
-        return;
-      }
-
-      if (file.name.endsWith(".geojson") || file.name.endsWith(".json")) {
-        const text = await file.text();
-        addLayer(JSON.parse(text), file.name);
-        return;
-      }
-
-      alert("Supported files: .zip shapefile, .geojson, .json");
-    } catch (err) {
-      console.error(err);
-      alert(`Import failed: ${err.message}`);
+    if (file.name.endsWith(".zip")) {
+      const buffer = await file.arrayBuffer();
+      const geojson = await shp(buffer);
+      addLayer(geojson, file.name);
+    } else {
+      const text = await file.text();
+      addLayer(JSON.parse(text), file.name);
     }
   };
 
-  const removeLayer = (id) => {
-    const map = mapInstanceRef.current;
-    if (!map) return;
-
-    setLayers((prev) => {
-      const target = prev.find((l) => l.id === id);
-      if (target) {
-        map.removeLayer(target.layer);
-      }
-      return prev.filter((l) => l.id !== id);
-    });
-  };
-
-  const toggleLayer = (id) => {
-    const map = mapInstanceRef.current;
-    if (!map) return;
-
-    setLayers((prev) =>
-      prev.map((l) => {
+  const updateStyle = (id, key, value) => {
+    setLayers(prev =>
+      prev.map(l => {
         if (l.id !== id) return l;
 
-        if (l.visible) {
-          map.removeLayer(l.layer);
-        } else {
-          l.layer.addTo(map);
-        }
+        const updated = { ...l, [key]: value };
 
-        return { ...l, visible: !l.visible };
+        l.layer.setStyle({
+          color: updated.color,
+          fillOpacity: updated.opacity
+        });
+
+        return updated;
       })
     );
   };
 
-  const fitAll = () => {
-    const map = mapInstanceRef.current;
-    if (!map || layers.length === 0) return;
-
-    const visibleLayers = layers.filter((l) => l.visible).map((l) => l.layer);
-    if (visibleLayers.length === 0) return;
-
-    const group = L.featureGroup(visibleLayers);
-    const bounds = group.getBounds();
-    if (bounds.isValid()) {
-      map.fitBounds(bounds, { padding: [20, 20] });
-    }
-  };
-
   const exportSVG = () => {
-    const mapEl = mapContainerRef.current;
-    if (!mapEl) return;
+    const svg = document.querySelector(".leaflet-overlay-pane svg");
+    if (!svg) return alert("Nothing to export");
 
-    const pane = mapEl.querySelector(".leaflet-overlay-pane svg");
-    if (!pane) {
-      alert("No vector layer found to export.");
-      return;
-    }
-
-    const data = new XMLSerializer().serializeToString(pane);
-    const blob = new Blob([data], { type: "image/svg+xml;charset=utf-8" });
+    const data = new XMLSerializer().serializeToString(svg);
+    const blob = new Blob([data], { type: "image/svg+xml" });
     const url = URL.createObjectURL(blob);
 
     const a = document.createElement("a");
     a.href = url;
     a.download = "map.svg";
     a.click();
-
-    URL.revokeObjectURL(url);
   };
 
   return (
-    <div className="app-shell">
+    <div className="app">
       <div className="sidebar">
         <h2>Mapviewer</h2>
 
-        <input
-          type="file"
-          accept=".zip,.geojson,.json"
-          onChange={(e) => handleFile(e.target.files?.[0])}
-        />
+        <input type="file" onChange={e => handleFile(e.target.files[0])} />
 
-        <button onClick={fitAll}>Fit All</button>
+        <input value={title} onChange={e => setTitle(e.target.value)} />
+        <input value={subtitle} onChange={e => setSubtitle(e.target.value)} />
+
+        <input type="file" onChange={e => {
+          const reader = new FileReader();
+          reader.onload = () => setLogo(reader.result);
+          reader.readAsDataURL(e.target.files[0]);
+        }} />
+
         <button onClick={exportSVG}>Export SVG</button>
 
-        <div className="layer-list">
-          {layers.length === 0 ? (
-            <div className="layer-empty">No layers loaded</div>
-          ) : (
-            layers.map((l) => (
-              <div key={l.id} className="layer-item">
-                <span>{l.name}</span>
-                <div className="layer-actions">
-                  <button onClick={() => toggleLayer(l.id)}>
-                    {l.visible ? "Hide" : "Show"}
-                  </button>
-                  <button onClick={() => removeLayer(l.id)}>Remove</button>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+        {layers.map(l => (
+          <div key={l.id}>
+            <div>{l.name}</div>
+
+            <input type="color"
+              value={l.color}
+              onChange={e => updateStyle(l.id, "color", e.target.value)}
+            />
+
+            <input type="range" min="0" max="1" step="0.1"
+              value={l.opacity}
+              onChange={e => updateStyle(l.id, "opacity", e.target.value)}
+            />
+          </div>
+        ))}
       </div>
 
-      <div ref={mapContainerRef} id="map" />
+      <div className="map-wrapper">
+        <div className="map-header">
+          <h1>{title}</h1>
+          <h3>{subtitle}</h3>
+        </div>
+
+        {logo && <img src={logo} className="logo" />}
+
+        <div ref={containerRef} className="map"></div>
+
+        <div className="legend">
+          {layers.map(l => (
+            <div key={l.id}>
+              <span style={{ background: l.color }} className="legend-box"></span>
+              {l.name}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
