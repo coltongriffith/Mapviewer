@@ -1,10 +1,49 @@
 import React, { useEffect, useRef } from "react";
+import L from "leaflet";
 import { createBasicMap } from "../utils/leafletHelpers";
 import { DEFAULT_MAP_CENTER, DEFAULT_ZOOM } from "../constants";
 
-function isPointFeature(feature) {
-  const type = feature?.geometry?.type;
+function geometryTypeOfGeoJSON(geojson) {
+  if (!geojson) return null;
+
+  if (geojson.type === "Feature") {
+    return geojson.geometry?.type || null;
+  }
+
+  if (geojson.type === "FeatureCollection") {
+    const first = geojson.features?.find((f) => f?.geometry?.type);
+    return first?.geometry?.type || null;
+  }
+
+  return geojson.type || null;
+}
+
+function isPointType(type) {
   return type === "Point" || type === "MultiPoint";
+}
+
+function layerStyle(layer) {
+  return {
+    color: layer.style?.stroke || "#54a6ff",
+    weight: layer.style?.strokeWidth ?? 2,
+    fillColor: layer.style?.fill || "#54a6ff",
+    fillOpacity: layer.style?.fillOpacity ?? 0.22,
+    opacity: 1,
+    dashArray: layer.style?.dashArray || undefined,
+  };
+}
+
+function pointMarkerStyle(layer) {
+  const radius = Math.max(3, Number(layer.style?.markerSize || 10) / 2);
+  const color = layer.style?.markerColor || layer.style?.stroke || "#111111";
+
+  return {
+    radius,
+    color,
+    fillColor: color,
+    fillOpacity: 1,
+    weight: 1,
+  };
 }
 
 export default function MapCanvas({ onReady, project }) {
@@ -21,11 +60,11 @@ export default function MapCanvas({ onReady, project }) {
 
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !window.L) return;
+    if (!map) return;
 
-    renderedLayersRef.current.forEach((layer) => {
+    renderedLayersRef.current.forEach((entry) => {
       try {
-        map.removeLayer(layer);
+        map.removeLayer(entry.leafletLayer);
       } catch {
         // no-op
       }
@@ -35,35 +74,41 @@ export default function MapCanvas({ onReady, project }) {
     (project?.layers || [])
       .filter((layer) => layer.visible !== false && layer.geojson)
       .forEach((layer) => {
-        const leafletLayer = window.L.geoJSON(layer.geojson, {
-          style: () => ({
-            color: layer.style?.stroke || "#3b82f6",
-            weight: layer.style?.strokeWidth || 2,
-            fillColor: layer.style?.fill || "#3b82f6",
-            fillOpacity: layer.style?.fillOpacity ?? 0.2,
-            dashArray: layer.style?.dashArray || undefined,
-          }),
-          pointToLayer: (feature, latlng) => {
-            const size = Number(layer.style?.markerSize || 10);
-            const radius = Math.max(4, size / 2);
-            return window.L.circleMarker(latlng, {
-              radius,
-              color: layer.style?.markerColor || "#111111",
-              fillColor: layer.style?.markerColor || "#111111",
-              fillOpacity: 1,
-              weight: 1,
-            });
-          },
-          filter: (feature) => {
-            if (layer.type === "points") return isPointFeature(feature);
-            return true;
+        const geomType = geometryTypeOfGeoJSON(layer.geojson);
+
+        const leafletLayer = L.geoJSON(layer.geojson, {
+          style: () => layerStyle(layer),
+          pointToLayer: (_feature, latlng) =>
+            L.circleMarker(latlng, pointMarkerStyle(layer)),
+          onEachFeature: (feature, featureLayer) => {
+            if (feature?.properties && Object.keys(feature.properties).length) {
+              featureLayer.bindPopup(
+                `<pre style="margin:0;font-size:11px;max-width:260px;overflow:auto;">${escapeHtml(
+                  JSON.stringify(feature.properties, null, 2)
+                )}</pre>`
+              );
+            }
           },
         });
 
         leafletLayer.addTo(map);
-        renderedLayersRef.current.push(leafletLayer);
+
+        renderedLayersRef.current.push({
+          id: layer.id,
+          type: isPointType(geomType) ? "points" : "vector",
+          leafletLayer,
+        });
       });
+
+    return () => {};
   }, [project]);
 
   return <div id="map" style={{ width: "100%", height: "100%" }} />;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
 }
