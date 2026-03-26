@@ -1,4 +1,5 @@
 import React, { useMemo, useRef, useState } from "react";
+import L from "leaflet";
 import MapCanvas from "./components/MapCanvas";
 import Sidebar from "./components/Sidebar";
 import LayerList from "./components/LayerList";
@@ -8,6 +9,23 @@ import { exportPNG } from "./export/exportPNG";
 import { exportSVG } from "./export/exportSVG";
 import { createInitialProjectState } from "./projectState";
 import { applyPresetToLayer, LAYER_PRESETS } from "./mapPresets";
+
+function detectLayerKind(geojson) {
+  if (!geojson) return "geojson";
+
+  const features =
+    geojson.type === "FeatureCollection"
+      ? geojson.features || []
+      : geojson.type === "Feature"
+        ? [geojson]
+        : [];
+
+  const first = features.find((f) => f?.geometry?.type);
+  const type = first?.geometry?.type;
+
+  if (type === "Point" || type === "MultiPoint") return "points";
+  return "geojson";
+}
 
 export default function App() {
   const mapContainerRef = useRef(null);
@@ -23,14 +41,13 @@ export default function App() {
     [project.layers, selectedLayerId]
   );
 
-  const updateProject = (patch) => {
-    setProject((prev) => ({ ...prev, ...patch }));
-  };
-
   const updateLayout = (patch) => {
     setProject((prev) => ({
       ...prev,
-      layout: { ...prev.layout, ...patch },
+      layout: {
+        ...prev.layout,
+        ...patch,
+      },
     }));
   };
 
@@ -38,7 +55,18 @@ export default function App() {
     setProject((prev) => ({
       ...prev,
       layers: prev.layers.map((layer) =>
-        layer.id === layerId ? { ...layer, ...patch } : layer
+        layer.id === layerId
+          ? {
+              ...layer,
+              ...patch,
+              style: patch.style
+                ? { ...(layer.style || {}), ...patch.style }
+                : layer.style,
+              legend: patch.legend
+                ? { ...(layer.legend || {}), ...patch.legend }
+                : layer.legend,
+            }
+          : layer
       ),
     }));
   };
@@ -52,8 +80,6 @@ export default function App() {
     if (!map || !geojson) return;
 
     try {
-      const L = window.L;
-      if (!L) return;
       const tmp = L.geoJSON(geojson);
       const bounds = tmp.getBounds?.();
       if (bounds && bounds.isValid && bounds.isValid()) {
@@ -68,39 +94,45 @@ export default function App() {
     try {
       const geojson = await loadGeoJSON(file);
       const id = crypto.randomUUID();
-      const baseName = file.name.replace(/\.(geojson|json)$/i, "");
+      const baseName = file.name.replace(/\.(geojson|json)$/i, "") || "Layer";
+      const kind = detectLayerKind(geojson);
+      const presetKey = kind === "points" ? "drillhole" : "claim";
 
-      const presetLayer = applyPresetToLayer(
-        {
-          id,
-          name: baseName || "Layer",
-          type: "geojson",
-          visible: true,
-          geojson,
-          style: {
-            stroke: "#3b82f6",
-            fill: "#3b82f6",
-            fillOpacity: 0.2,
-            strokeWidth: 2,
-            markerColor: "#111111",
-            markerSize: 10,
-          },
-          legend: {
-            enabled: true,
-            label: baseName || "Layer",
-          },
+      const rawLayer = {
+        id,
+        name: baseName,
+        type: kind,
+        visible: true,
+        geojson,
+        style: {
+          stroke: "#54a6ff",
+          fill: "#54a6ff",
+          fillOpacity: 0.22,
+          strokeWidth: 2,
+          markerColor: "#111111",
+          markerSize: 10,
+          dashArray: "",
         },
-        "claim"
-      );
+        legend: {
+          enabled: true,
+          label: baseName,
+        },
+      };
+
+      const nextLayer = applyPresetToLayer(rawLayer, presetKey);
 
       setProject((prev) => ({
         ...prev,
-        layers: [...prev.layers, presetLayer],
+        layers: [...prev.layers, nextLayer],
       }));
+
       setSelectedLayerId(id);
 
-      setTimeout(() => fitLayerBounds(geojson), 50);
+      setTimeout(() => {
+        fitLayerBounds(geojson);
+      }, 50);
     } catch (err) {
+      console.error(err);
       alert(`Import failed: ${err.message}`);
     }
   };
@@ -110,34 +142,6 @@ export default function App() {
     if (!file) return;
     await addGeoJSONLayer(file);
     e.target.value = "";
-  };
-
-  const handleExportPNG = async () => {
-    if (!mapContainerRef.current) return;
-    setExporting(true);
-    try {
-      const scene = buildScene(mapContainerRef.current, project);
-      await exportPNG(scene);
-    } catch (err) {
-      console.error(err);
-      alert(`PNG export failed: ${err.message}`);
-    } finally {
-      setExporting(false);
-    }
-  };
-
-  const handleExportSVG = async () => {
-    if (!mapContainerRef.current || !leafletMapRef.current) return;
-    setExporting(true);
-    try {
-      const scene = buildScene(mapContainerRef.current, project, leafletMapRef.current);
-      exportSVG(scene);
-    } catch (err) {
-      console.error(err);
-      alert(`SVG export failed: ${err.message}`);
-    } finally {
-      setExporting(false);
-    }
   };
 
   const handleBuildLegend = () => {
@@ -159,12 +163,40 @@ export default function App() {
     updateLayer(selectedLayer.id, next);
   };
 
+  const handleExportPNG = async () => {
+    if (!mapContainerRef.current) return;
+    setExporting(true);
+    try {
+      const scene = buildScene(mapContainerRef.current, project, leafletMapRef.current);
+      await exportPNG(scene);
+    } catch (err) {
+      console.error(err);
+      alert(`PNG export failed: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleExportSVG = async () => {
+    if (!mapContainerRef.current) return;
+    setExporting(true);
+    try {
+      const scene = buildScene(mapContainerRef.current, project, leafletMapRef.current);
+      exportSVG(scene);
+    } catch (err) {
+      console.error(err);
+      alert(`SVG export failed: ${err.message}`);
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <div className="app-shell">
       <Sidebar>
         <div className="sidebar-section">
           <div className="sidebar-title">Mapviewer</div>
-          <div className="sidebar-subtitle">Clean rebuild baseline</div>
+          <div className="sidebar-subtitle">Step 1 · map renderer solid</div>
         </div>
 
         <div className="sidebar-section">
@@ -242,63 +274,91 @@ export default function App() {
               ))}
             </select>
 
-            <label className="field-label">Stroke</label>
-            <input
-              className="color-input"
-              type="color"
-              value={selectedLayer.style?.stroke || "#3b82f6"}
-              onChange={(e) =>
-                updateLayer(selectedLayer.id, {
-                  style: { ...selectedLayer.style, stroke: e.target.value },
-                })
-              }
-            />
+            {selectedLayer.type !== "points" && (
+              <>
+                <label className="field-label">Stroke</label>
+                <input
+                  className="color-input"
+                  type="color"
+                  value={selectedLayer.style?.stroke || "#54a6ff"}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      style: { stroke: e.target.value },
+                    })
+                  }
+                />
 
-            <label className="field-label">Fill</label>
-            <input
-              className="color-input"
-              type="color"
-              value={selectedLayer.style?.fill || "#3b82f6"}
-              onChange={(e) =>
-                updateLayer(selectedLayer.id, {
-                  style: { ...selectedLayer.style, fill: e.target.value },
-                })
-              }
-            />
+                <label className="field-label">Fill</label>
+                <input
+                  className="color-input"
+                  type="color"
+                  value={selectedLayer.style?.fill || "#54a6ff"}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      style: { fill: e.target.value },
+                    })
+                  }
+                />
 
-            <label className="field-label">Fill Opacity</label>
-            <input
-              type="range"
-              min="0"
-              max="1"
-              step="0.05"
-              value={selectedLayer.style?.fillOpacity ?? 0.2}
-              onChange={(e) =>
-                updateLayer(selectedLayer.id, {
-                  style: {
-                    ...selectedLayer.style,
-                    fillOpacity: Number(e.target.value),
-                  },
-                })
-              }
-            />
+                <label className="field-label">Fill Opacity</label>
+                <input
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={selectedLayer.style?.fillOpacity ?? 0.22}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      style: { fillOpacity: Number(e.target.value) },
+                    })
+                  }
+                />
 
-            <label className="field-label">Stroke Width</label>
-            <input
-              type="range"
-              min="1"
-              max="8"
-              step="1"
-              value={selectedLayer.style?.strokeWidth ?? 2}
-              onChange={(e) =>
-                updateLayer(selectedLayer.id, {
-                  style: {
-                    ...selectedLayer.style,
-                    strokeWidth: Number(e.target.value),
-                  },
-                })
-              }
-            />
+                <label className="field-label">Stroke Width</label>
+                <input
+                  type="range"
+                  min="1"
+                  max="8"
+                  step="1"
+                  value={selectedLayer.style?.strokeWidth ?? 2}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      style: { strokeWidth: Number(e.target.value) },
+                    })
+                  }
+                />
+              </>
+            )}
+
+            {selectedLayer.type === "points" && (
+              <>
+                <label className="field-label">Marker Color</label>
+                <input
+                  className="color-input"
+                  type="color"
+                  value={selectedLayer.style?.markerColor || "#111111"}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      style: { markerColor: e.target.value },
+                    })
+                  }
+                />
+
+                <label className="field-label">Marker Size</label>
+                <input
+                  type="range"
+                  min="6"
+                  max="24"
+                  step="1"
+                  value={selectedLayer.style?.markerSize ?? 10}
+                  onChange={(e) =>
+                    updateLayer(selectedLayer.id, {
+                      style: { markerSize: Number(e.target.value) },
+                    })
+                  }
+                />
+              </>
+            )}
 
             <label className="field-label">Legend Label</label>
             <input
@@ -307,7 +367,6 @@ export default function App() {
               onChange={(e) =>
                 updateLayer(selectedLayer.id, {
                   legend: {
-                    ...selectedLayer.legend,
                     enabled: true,
                     label: e.target.value,
                   },
@@ -339,10 +398,7 @@ export default function App() {
         </div>
 
         <div className="map-container" ref={mapContainerRef}>
-          <MapCanvas
-            onReady={onMapReady}
-            project={project}
-          />
+          <MapCanvas onReady={onMapReady} project={project} />
 
           {project.layout.legendItems?.length > 0 && (
             <div className="legend-box">
@@ -352,8 +408,13 @@ export default function App() {
                   <span
                     className="legend-swatch"
                     style={{
-                      background: item.style?.fill || "#3b82f6",
-                      borderColor: item.style?.stroke || "#3b82f6",
+                      background: item.type === "points"
+                        ? item.style?.markerColor || "#111111"
+                        : item.style?.fill || "#54a6ff",
+                      borderColor: item.type === "points"
+                        ? item.style?.markerColor || "#111111"
+                        : item.style?.stroke || "#54a6ff",
+                      borderRadius: item.type === "points" ? "999px" : "2px",
                     }}
                   />
                   <span>{item.label}</span>
