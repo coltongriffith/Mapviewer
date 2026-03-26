@@ -10,7 +10,6 @@ const MARKER_TYPES = [
   { value:"square",    label:"■ Square" },
   { value:"triangle",  label:"▲ Triangle" },
 ];
-
 const FILL_PATTERNS = [
   { value:"solid",      label:"Solid" },
   { value:"hatch",      label:"Hatch ////" },
@@ -18,9 +17,7 @@ const FILL_PATTERNS = [
   { value:"dots",       label:"Dots ···" },
   { value:"none",       label:"No fill" },
 ];
-
-// ─── Snap grid values ─────────────────────────────────────────────────────────
-const SNAP_LINES = [0.25, 0.33, 0.5, 0.66, 0.75]; // fractions of container
+const SNAP_THRESHOLD = 10;
 
 // ─── Marker icon factory ──────────────────────────────────────────────────────
 function makeMarkerIcon(type, color, size = 14) {
@@ -31,12 +28,8 @@ function makeMarkerIcon(type, color, size = 14) {
   else if (type==="diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
   else if (type==="square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
   else if (type==="triangle")  inner = `<polygon points="${h},1 ${s-1},${s-1} 1,${s-1}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
-  return L.icon({
-    iconUrl: `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}">${inner}</svg>`)}`,
-    iconSize:[s,s], iconAnchor:[h,h], popupAnchor:[0,-h-2],
-  });
+  return L.icon({ iconUrl:`data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}">${inner}</svg>`)}`, iconSize:[s,s], iconAnchor:[h,h], popupAnchor:[0,-h-2] });
 }
-
 function markerSvgUrl(type, color, size = 16) {
   const s = size, h = s / 2;
   let inner = "";
@@ -55,7 +48,6 @@ const escapeXml  = v => String(v??"").replaceAll("&","&amp;").replaceAll("<","&l
 function loadImageFile(file, setter) {
   const r = new FileReader(); r.onload = () => setter(r.result); r.readAsDataURL(file);
 }
-
 function csvToGeoJSON(text) {
   const lines = text.trim().split(/\r?\n/);
   const headers = lines[0].split(",").map(h => h.trim());
@@ -63,32 +55,28 @@ function csvToGeoJSON(text) {
   const lngIdx = headers.findIndex(h => /^lo?n(gitude|g)?$/i.test(h));
   if (latIdx < 0 || lngIdx < 0) throw new Error("CSV must have lat and lon/lng columns.");
   const features = lines.slice(1).filter(Boolean).map(line => {
-    const parts = line.split(","); const props = {};
+    const parts = line.match(/("(?:[^"]|"")*"|[^,]*)/g).map(v => v.replace(/^"|"$/g,"").replace(/""/g,'"').trim());
+    const props = {};
     headers.forEach((h,i) => { props[h] = parts[i]?.trim(); });
     return { type:"Feature", geometry:{ type:"Point", coordinates:[+parts[lngIdx],+parts[latIdx]] }, properties:props };
   });
   return { type:"FeatureCollection", features };
 }
-
 function isPointLayer(geojson) {
   const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g=>g.features??[]) : []);
   if (!features.length) return false;
   return features.filter(f=>f.geometry?.type==="Point"||f.geometry?.type==="MultiPoint").length/features.length > 0.5;
 }
-
 function getPropertyKeys(geojson) {
   const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g=>g.features??[]) : []);
   const keys = new Set();
   features.slice(0,20).forEach(f => Object.keys(f.properties??{}).forEach(k=>keys.add(k)));
   return [...keys];
 }
-
 async function loadScript(src) {
   if (document.querySelector(`script[src="${src}"]`)) return;
   return new Promise((res,rej) => { const s=document.createElement("script"); s.src=src; s.onload=res; s.onerror=rej; document.head.appendChild(s); });
 }
-
-// Convert circle to editable polygon (N-point blob)
 function circleToPolygon(center, radius, n=24) {
   return Array.from({length:n}, (_,i) => {
     const angle = (2*Math.PI*i/n) - Math.PI/2;
@@ -97,8 +85,6 @@ function circleToPolygon(center, radius, n=24) {
     return L.latLng(lat, lng);
   });
 }
-
-// Inject SVG patterns into Leaflet overlay SVG
 function injectSvgPatterns(map, color) {
   const svg = map.getPanes().overlayPane?.querySelector("svg");
   if (!svg) return;
@@ -111,80 +97,202 @@ function injectSvgPatterns(map, color) {
   ].forEach(({id,markup}) => { const e=defs.querySelector(`#${id}`); if(e) e.remove(); defs.insertAdjacentHTML("beforeend",markup); });
 }
 
-// ─── Draggable wrapper — stops propagation to Leaflet ─────────────────────────
-function DraggableEl({ x, y, onMove, children, style={}, className="" }) {
-  const ref = useRef({ dragging:false });
-  const onMouseDown = useCallback((e) => {
+// ─── Smart snap helper ────────────────────────────────────────────────────────
+function computeSnap(x, y, w, h, elements, containerW, containerH, selfId) {
+  let sx = x, sy = y;
+  const guides = [];
+  let bestDx = SNAP_THRESHOLD + 1, bestDy = SNAP_THRESHOLD + 1;
+  const selfEdges = { xl:x, xc:x+w/2, xr:x+w, yt:y, yc:y+h/2, yb:y+h };
+  const offX = [0, w/2, w], offY = [0, h/2, h];
+  const candidates = [
+    ...elements.filter(el=>el.id!==selfId).flatMap(el=>[
+      {type:"v",pos:el.x}, {type:"v",pos:el.x+el.w/2}, {type:"v",pos:el.x+el.w},
+      {type:"h",pos:el.y}, {type:"h",pos:el.y+el.h/2}, {type:"h",pos:el.y+el.h},
+    ]),
+    {type:"v",pos:0},{type:"v",pos:containerW/2},{type:"v",pos:containerW},
+    {type:"h",pos:0},{type:"h",pos:containerH/2},{type:"h",pos:containerH},
+  ];
+  candidates.filter(c=>c.type==="v").forEach(c=>{
+    [selfEdges.xl, selfEdges.xc, selfEdges.xr].forEach((edge,i)=>{
+      const d=Math.abs(edge-c.pos);
+      if(d<SNAP_THRESHOLD&&d<bestDx){ bestDx=d; sx=c.pos-offX[i]; guides.push({type:"v",pos:c.pos}); }
+    });
+  });
+  candidates.filter(c=>c.type==="h").forEach(c=>{
+    [selfEdges.yt, selfEdges.yc, selfEdges.yb].forEach((edge,i)=>{
+      const d=Math.abs(edge-c.pos);
+      if(d<SNAP_THRESHOLD&&d<bestDy){ bestDy=d; sy=c.pos-offY[i]; guides.push({type:"h",pos:c.pos}); }
+    });
+  });
+  return { x:sx, y:sy, guides };
+}
+
+// ─── Resizable + Draggable element ────────────────────────────────────────────
+function ResizableDraggable({ id, x, y, w, h, minW=60, minH=30, onMove, onResize, onDragStart, onDragEnd, children, className="", zIndex=1001, snapElements=[], containerW=1200, containerH=800 }) {
+  const [snapGuides, setSnapGuides] = useState([]);
+
+  const startDrag = useCallback((e) => {
     if (e.button!==0) return;
     e.stopPropagation(); e.preventDefault();
+    onDragStart?.();
     const ox=e.clientX-x, oy=e.clientY-y;
-    ref.current.dragging=true;
-    const mv=(ev)=>onMove({ x:ev.clientX-ox, y:ev.clientY-oy });
-    const up=()=>{ ref.current.dragging=false; window.removeEventListener("mousemove",mv); window.removeEventListener("mouseup",up); };
+    const mv=(ev)=>{
+      let nx=ev.clientX-ox, ny=ev.clientY-oy;
+      const snap=computeSnap(nx,ny,w,h,snapElements,containerW,containerH,id);
+      nx=snap.x; ny=snap.y;
+      setSnapGuides(snap.guides);
+      onMove({x:nx,y:ny});
+    };
+    const up=()=>{ setSnapGuides([]); onDragEnd?.(); window.removeEventListener("mousemove",mv); window.removeEventListener("mouseup",up); };
     window.addEventListener("mousemove",mv); window.addEventListener("mouseup",up);
-  },[x,y,onMove]);
+  },[x,y,w,h,id,onMove,onDragStart,onDragEnd,snapElements,containerW,containerH]);
 
-  return (
-    <div className={`drag-el ${className}`} style={{position:"absolute",left:x,top:y,zIndex:1001,cursor:"move",userSelect:"none",...style}} onMouseDown={onMouseDown}>
-      {children}
-    </div>
-  );
-}
-
-// ─── Snap grid overlay ────────────────────────────────────────────────────────
-function SnapGrid({ active, containerRef }) {
-  if (!active || !containerRef.current) return null;
-  const W = containerRef.current.offsetWidth;
-  const H = containerRef.current.offsetHeight;
-  return (
-    <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:2000}} xmlns="http://www.w3.org/2000/svg">
-      {SNAP_LINES.map(f=>(
-        <g key={f}>
-          <line x1={W*f} y1={0} x2={W*f} y2={H} stroke="rgba(100,180,255,0.35)" strokeWidth="1" strokeDasharray="4,4"/>
-          <line x1={0} y1={H*f} x2={W} y2={H*f} stroke="rgba(100,180,255,0.35)" strokeWidth="1" strokeDasharray="4,4"/>
-        </g>
-      ))}
-      {/* Center cross */}
-      <line x1={W/2} y1={0} x2={W/2} y2={H} stroke="rgba(100,200,255,0.55)" strokeWidth="1"/>
-      <line x1={0} y1={H/2} x2={W} y2={H/2} stroke="rgba(100,200,255,0.55)" strokeWidth="1"/>
-    </svg>
-  );
-}
-
-// ─── Callout box with draggable pin AND box ───────────────────────────────────
-function CalloutBox({ c, onChange }) {
-  const lines = c.text.replace(/\\n/g,"\n").split("\n");
-  const charW = 7.5;
-  const w = Math.max(80, Math.max(...lines.map(l=>l.length))*charW+24);
-  const h = lines.length*18+14;
-
-  const startDrag=(e, which)=>{
+  const startResize = useCallback((e,dir)=>{
     if(e.button!==0) return;
     e.stopPropagation(); e.preventDefault();
-    const key = which==="pin" ? { ox:c.pinX, oy:c.pinY } : { ox:c.boxX, oy:c.boxY };
-    const sx=e.clientX, sy=e.clientY;
+    const sx=e.clientX,sy=e.clientY,ox=x,oy=y,ow=w,oh=h;
     const mv=(ev)=>{
-      const dx=ev.clientX-sx, dy=ev.clientY-sy;
-      if(which==="pin") onChange({pinX:key.ox+dx, pinY:key.oy+dy});
-      else onChange({boxX:key.ox+dx, boxY:key.oy+dy});
+      const dx=ev.clientX-sx,dy=ev.clientY-sy;
+      let nx=ox,ny=oy,nw=ow,nh=oh;
+      if(dir.includes("e")) nw=Math.max(minW,ow+dx);
+      if(dir.includes("s")) nh=Math.max(minH,oh+dy);
+      if(dir.includes("w")){ nw=Math.max(minW,ow-dx); nx=ox+ow-nw; }
+      if(dir.includes("n")){ nh=Math.max(minH,oh-dy); ny=oy+oh-nh; }
+      onResize({x:nx,y:ny,w:nw,h:nh});
     };
     const up=()=>{ window.removeEventListener("mousemove",mv); window.removeEventListener("mouseup",up); };
     window.addEventListener("mousemove",mv); window.addEventListener("mouseup",up);
+  },[x,y,w,h,minW,minH,onResize]);
+
+  const handlePos = {
+    n:  {top:-4,left:"50%",transform:"translateX(-50%)",cursor:"n-resize"},
+    ne: {top:-4,right:-4,cursor:"ne-resize"},
+    e:  {top:"50%",right:-4,transform:"translateY(-50%)",cursor:"e-resize"},
+    se: {bottom:-4,right:-4,cursor:"se-resize"},
+    s:  {bottom:-4,left:"50%",transform:"translateX(-50%)",cursor:"s-resize"},
+    sw: {bottom:-4,left:-4,cursor:"sw-resize"},
+    w:  {top:"50%",left:-4,transform:"translateY(-50%)",cursor:"w-resize"},
+    nw: {top:-4,left:-4,cursor:"nw-resize"},
   };
 
   return (
-    <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:1002}} xmlns="http://www.w3.org/2000/svg">
-      <line x1={c.pinX} y1={c.pinY} x2={c.boxX+w/2} y2={c.boxY+h} stroke={c.borderColor} strokeWidth="1.5" strokeDasharray="5,3"/>
-      {/* Draggable pin */}
-      <circle cx={c.pinX} cy={c.pinY} r="7" fill={c.borderColor} style={{pointerEvents:"all",cursor:"move"}} onMouseDown={e=>startDrag(e,"pin")}/>
-      <circle cx={c.pinX} cy={c.pinY} r="3" fill="#fff" style={{pointerEvents:"none"}}/>
-      {/* Draggable box */}
-      <g style={{pointerEvents:"all",cursor:"move"}} onMouseDown={e=>startDrag(e,"box")}>
-        <rect x={c.boxX} y={c.boxY} width={w} height={h} fill={c.bgColor} stroke={c.borderColor} strokeWidth="1.5" rx="3"/>
-        {lines.map((line,i)=>(
-          <text key={i} x={c.boxX+10} y={c.boxY+15+i*18} fontSize="12" fontFamily="Arial" fontWeight="600" fill={c.borderColor}>{line}</text>
+    <>
+      {snapGuides.map((g,i)=>(
+        <div key={i} style={{position:"absolute",pointerEvents:"none",zIndex:9999,background:"rgba(80,180,255,0.7)",
+          ...(g.type==="v"?{left:g.pos,top:0,width:1,height:"100%"}:{top:g.pos,left:0,height:1,width:"100%"})}}/>
+      ))}
+      <div className={`rdrag ${className}`}
+        style={{position:"absolute",left:x,top:y,width:w,height:h,zIndex,userSelect:"none",cursor:"move",boxSizing:"border-box"}}
+        onMouseDown={startDrag}>
+        {children}
+        {Object.entries(handlePos).map(([dir,pos])=>(
+          <div key={dir} onMouseDown={e=>startResize(e,dir)}
+            style={{position:"absolute",width:8,height:8,background:"rgba(80,160,255,0.9)",border:"1px solid #fff",borderRadius:2,zIndex:10,...pos}}/>
         ))}
-      </g>
+      </div>
+    </>
+  );
+}
+
+// ─── Text element (double-click to edit) ─────────────────────────────────────
+function TextEl({ el, onChange, onDragStart, onDragEnd, selected, onSelect, snapElements, containerW, containerH }) {
+  const [editing,setEditing] = useState(false);
+  const taRef = useRef(null);
+  return (
+    <ResizableDraggable id={el.id} x={el.x} y={el.y} w={el.w} h={el.h}
+      onMove={p=>onChange({...el,...p})} onResize={p=>onChange({...el,...p})}
+      onDragStart={onDragStart} onDragEnd={onDragEnd}
+      snapElements={snapElements} containerW={containerW} containerH={containerH}
+      zIndex={selected?1010:1001}>
+      <div style={{width:"100%",height:"100%",border:selected?"1.5px dashed rgba(80,160,255,0.8)":"1.5px dashed transparent"}}
+        onClick={e=>{e.stopPropagation();onSelect(el.id);}}
+        onDoubleClick={e=>{e.stopPropagation();setEditing(true);setTimeout(()=>taRef.current?.focus(),0);}}>
+        {editing?(
+          <textarea ref={taRef} value={el.text} onChange={e=>onChange({...el,text:e.target.value})} onBlur={()=>setEditing(false)}
+            style={{width:"100%",height:"100%",background:"transparent",border:"none",outline:"none",resize:"none",color:el.color,fontSize:el.size,fontWeight:el.bold?"bold":"normal",fontFamily:"Arial",lineHeight:1.3,padding:4}}/>
+        ):(
+          <div style={{width:"100%",height:"100%",color:el.color,fontSize:el.size,fontWeight:el.bold?"bold":"normal",fontFamily:"Arial",lineHeight:1.3,padding:4,whiteSpace:"pre-wrap",wordBreak:"break-word",overflow:"hidden"}}>
+            {el.text}
+          </div>
+        )}
+      </div>
+    </ResizableDraggable>
+  );
+}
+
+// ─── Callout box ──────────────────────────────────────────────────────────────
+function CalloutBox({ c, onChange, onDragStart, onDragEnd, selected, onSelect, snapElements, containerW, containerH }) {
+  const [editing,setEditing] = useState(false);
+  const taRef = useRef(null);
+  const lines = c.text.replace(/\\n/g,"\n").split("\n");
+  const bw = c.w ?? Math.max(120, Math.max(...lines.map(l=>l.length))*7.5+24);
+  const bh = c.h ?? (lines.length*18+14);
+  return (
+    <>
+      <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:1002}} xmlns="http://www.w3.org/2000/svg">
+        <line x1={c.pinX} y1={c.pinY} x2={c.boxX+bw/2} y2={c.boxY+bh} stroke={c.borderColor} strokeWidth="1.5" strokeDasharray="5,3"/>
+        <circle cx={c.pinX} cy={c.pinY} r="7" fill={c.borderColor} style={{pointerEvents:"all",cursor:"move"}}
+          onMouseDown={e=>{
+            if(e.button!==0)return; e.stopPropagation(); e.preventDefault();
+            const sx=e.clientX,sy=e.clientY,ox=c.pinX,oy=c.pinY;
+            const mv=(ev)=>onChange({pinX:ox+(ev.clientX-sx),pinY:oy+(ev.clientY-sy)});
+            const up=()=>{window.removeEventListener("mousemove",mv);window.removeEventListener("mouseup",up);};
+            window.addEventListener("mousemove",mv);window.addEventListener("mouseup",up);
+          }}/>
+        <circle cx={c.pinX} cy={c.pinY} r="3" fill="#fff" style={{pointerEvents:"none"}}/>
+      </svg>
+      <ResizableDraggable id={c.id} x={c.boxX} y={c.boxY} w={bw} h={bh}
+        onMove={p=>onChange({boxX:p.x,boxY:p.y})} onResize={p=>onChange({boxX:p.x,boxY:p.y,w:p.w,h:p.h})}
+        onDragStart={onDragStart} onDragEnd={onDragEnd}
+        snapElements={snapElements} containerW={containerW} containerH={containerH}
+        zIndex={selected?1010:1003}>
+        <div style={{width:"100%",height:"100%",background:c.bgColor,border:`1.5px solid ${c.borderColor}`,borderRadius:3,boxSizing:"border-box",overflow:"hidden",cursor:"move"}}
+          onClick={e=>{e.stopPropagation();onSelect(c.id);}}
+          onDoubleClick={e=>{e.stopPropagation();setEditing(true);setTimeout(()=>taRef.current?.focus(),0);}}>
+          {editing?(
+            <textarea ref={taRef} value={c.text} onChange={e=>onChange({text:e.target.value})} onBlur={()=>setEditing(false)}
+              style={{width:"100%",height:"100%",background:"transparent",border:"none",outline:"none",resize:"none",color:c.borderColor,fontSize:12,fontFamily:"Arial",padding:"6px 8px"}}/>
+          ):(
+            <div style={{padding:"6px 8px",color:c.borderColor,fontSize:12,fontFamily:"Arial",fontWeight:600,whiteSpace:"pre-wrap",wordBreak:"break-word",overflow:"hidden",height:"100%"}}>
+              {c.text.replace(/\\n/g,"\n")}
+            </div>
+          )}
+        </div>
+      </ResizableDraggable>
+    </>
+  );
+}
+
+// ─── Canvas image overlay ─────────────────────────────────────────────────────
+function CanvasImageOverlay({ ov, onChange, onDragStart, onDragEnd, selected, onSelect, snapElements, containerW, containerH }) {
+  return (
+    <ResizableDraggable id={ov.id} x={ov.px} y={ov.py} w={ov.pw} h={ov.ph}
+      onMove={p=>onChange({px:p.x,py:p.y})} onResize={p=>onChange({px:p.x,py:p.y,pw:p.w,ph:p.h})}
+      onDragStart={onDragStart} onDragEnd={onDragEnd}
+      snapElements={snapElements} containerW={containerW} containerH={containerH}
+      zIndex={selected?1010:1000}>
+      <div style={{width:"100%",height:"100%",border:selected?"1.5px dashed rgba(80,160,255,0.8)":"none"}}
+        onClick={e=>{e.stopPropagation();onSelect(ov.id);}}>
+        <img src={ov.src} alt={ov.name} style={{width:"100%",height:"100%",objectFit:"fill",opacity:ov.opacity,display:"block",pointerEvents:"none"}}/>
+      </div>
+    </ResizableDraggable>
+  );
+}
+
+// ─── Snap grid ────────────────────────────────────────────────────────────────
+function SnapGrid({ active, containerRef }) {
+  if (!active||!containerRef.current) return null;
+  const W=containerRef.current.offsetWidth, H=containerRef.current.offsetHeight;
+  return (
+    <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:2000}} xmlns="http://www.w3.org/2000/svg">
+      {[0.25,0.33,0.5,0.66,0.75].map(f=>(
+        <g key={f}>
+          <line x1={W*f} y1={0} x2={W*f} y2={H} stroke="rgba(100,180,255,0.18)" strokeWidth="1" strokeDasharray="4,4"/>
+          <line x1={0} y1={H*f} x2={W} y2={H*f} stroke="rgba(100,180,255,0.18)" strokeWidth="1" strokeDasharray="4,4"/>
+        </g>
+      ))}
+      <line x1={W/2} y1={0} x2={W/2} y2={H} stroke="rgba(100,200,255,0.28)" strokeWidth="1"/>
+      <line x1={0} y1={H/2} x2={W} y2={H/2} stroke="rgba(100,200,255,0.28)" strokeWidth="1"/>
     </svg>
   );
 }
@@ -195,40 +303,39 @@ export default function App() {
   const containerRef = useRef(null);
   const drawRef      = useRef({ points:[], preview:null, center:null });
 
-  const [layers,        setLayers]        = useState([]);
-  const [title,         setTitle]         = useState("RIFT PROJECT");
-  const [subtitle,      setSubtitle]      = useState("Nebraska");
-  const [titlePos,      setTitlePos]      = useState({ x:null, y:18 });
-  const [logo,          setLogo]          = useState(null);
-  const [logoPos,       setLogoPos]       = useState({ x:18, y:18 });
-  const [northArrow,    setNorthArrow]    = useState(true);
-  const [showLegend,    setShowLegend]    = useState(true);
-  const [legendPos,     setLegendPos]     = useState({ x:16, y:null });
-  const [showInset,     setShowInset]     = useState(true);
-  const [insetImage,    setInsetImage]    = useState(null);
-  const [insetPos,      setInsetPos]      = useState({ x:null, y:80 });
-  const [imageOverlays, setImageOverlays] = useState([]);
-  const [pendingOverlay,setPendingOverlay]= useState(null);
-  const [annotations,   setAnnotations]   = useState([]);
-  const [annotDraft,    setAnnotDraft]    = useState({ text:"", color:"#0a2c78" });
-  const [callouts,      setCallouts]      = useState([]);
-  const [calloutDraft,  setCalloutDraft]  = useState({ text:"", bgColor:"#ffffff", borderColor:"#1a3a6b" });
-  const [curvedLabels,  setCurvedLabels]  = useState([]);
-  const [curvedDraft,   setCurvedDraft]   = useState({ text:"", color:"#111111", size:20 });
-  const [curvedStep,    setCurvedStep]    = useState(null);
+  const [layers,       setLayers]       = useState([]);
+  const [title,        setTitle]        = useState("RIFT PROJECT");
+  const [subtitle,     setSubtitle]     = useState("Nebraska");
+  const [titlePos,     setTitlePos]     = useState({ x:null, y:18, w:240, h:62 });
+  const [logo,         setLogo]         = useState(null);
+  const [logoPos,      setLogoPos]      = useState({ x:18, y:18, w:120, h:60 });
+  const [northArrow,   setNorthArrow]   = useState(true);
+  const [showLegend,   setShowLegend]   = useState(true);
+  const [legendPos,    setLegendPos]    = useState({ x:16, y:null, w:200, h:null });
+  const [legendItems,  setLegendItems]  = useState([]);
+  const [legendDraft,  setLegendDraft]  = useState({ text:"", type:"swatch", color:"#4e8cff", markerType:"circle" });
+  const [showInset,    setShowInset]    = useState(true);
+  const [insetImage,   setInsetImage]   = useState(null);
+  const [insetPos,     setInsetPos]     = useState({ x:null, y:80, w:190, h:140 });
+  const [canvasImages, setCanvasImages] = useState([]);
+  const [textEls,      setTextEls]      = useState([]);
+  const [textDraft,    setTextDraft]    = useState({ text:"New Text", color:"#ffffff", size:16, bold:false });
+  const [callouts,     setCallouts]     = useState([]);
+  const [calloutDraft, setCalloutDraft] = useState({ text:"", bgColor:"#ffffff", borderColor:"#1a3a6b" });
+  const [curvedLabels, setCurvedLabels] = useState([]);
+  const [curvedDraft,  setCurvedDraft]  = useState({ text:"", color:"#111111", size:20 });
+  const [curvedStep,   setCurvedStep]   = useState(null);
   const curvedP1Ref = useRef(null);
-  const [drawMode,      setDrawMode]      = useState("none");
-  const [drawStyle,     setDrawStyle]     = useState({ color:"#e63946", fill:"#e63946", opacity:0.25, weight:2 });
-  const [drawActive,    setDrawActive]    = useState(false);
-  const [legendItems,   setLegendItems]   = useState([]);
-  const [legendDraft,   setLegendDraft]   = useState({ text:"", type:"swatch", color:"#4e8cff", markerType:"circle" });
-  const [exporting,     setExporting]     = useState(false);
-  const [exportType,    setExportType]    = useState("png"); // "png"|"svg"
-  const [draggingAny,   setDraggingAny]   = useState(false);
-  const [, tick] = useState(0); // force re-render for curved text on map move
-
-  // Placing modes
-  const [placing, setPlacing] = useState(null); // "annot"|"callout"|"overlay-p1"|"overlay-p2"
+  const [drawMode,     setDrawMode]     = useState("none");
+  const [drawStyle,    setDrawStyle]    = useState({ color:"#e63946", fill:"#e63946", opacity:0.25, weight:2 });
+  const [drawActive,   setDrawActive]   = useState(false);
+  const [exporting,    setExporting]    = useState(false);
+  const [exportType,   setExportType]   = useState("png");
+  const [draggingAny,  setDraggingAny]  = useState(false);
+  const [selectedId,   setSelectedId]   = useState(null);
+  const [groups,       setGroups]       = useState([]);
+  const [placing,      setPlacing]      = useState(null);
+  const [, tick] = useState(0);
 
   // ── Map init ──────────────────────────────────────────────────────────────
   useEffect(()=>{
@@ -244,7 +351,6 @@ export default function App() {
     return ()=>{if(mapRef.current){mapRef.current.remove();mapRef.current=null;}};
   },[]);
 
-  // ── Re-render curved text on map move ────────────────────────────────────
   useEffect(()=>{
     const map=mapRef.current;if(!map)return;
     const fn=()=>tick(n=>n+1);
@@ -262,40 +368,29 @@ export default function App() {
       const rect=containerRef.current.getBoundingClientRect();
       const px={x:e.originalEvent.clientX-rect.left, y:e.originalEvent.clientY-rect.top};
 
-      if(placing==="annot"){
-        setAnnotations(p=>[...p,{id:crypto.randomUUID(),text:annotDraft.text||"Label",color:annotDraft.color,x:px.x,y:px.y}]);
+      if(placing==="text"){
+        setTextEls(p=>[...p,{id:crypto.randomUUID(),text:textDraft.text,color:textDraft.color,size:textDraft.size,bold:textDraft.bold,x:px.x,y:px.y,w:180,h:60}]);
         setPlacing(null); return;
       }
       if(placing==="callout"){
-        setCallouts(p=>[...p,{id:crypto.randomUUID(),text:calloutDraft.text||"Label",bgColor:calloutDraft.bgColor,borderColor:calloutDraft.borderColor,pinX:px.x,pinY:px.y,boxX:px.x+24,boxY:px.y-64}]);
+        setCallouts(p=>[...p,{id:crypto.randomUUID(),text:calloutDraft.text||"Label",bgColor:calloutDraft.bgColor,borderColor:calloutDraft.borderColor,pinX:px.x,pinY:px.y,boxX:px.x+24,boxY:px.y-64,w:null,h:null}]);
         setPlacing(null); return;
-      }
-      if(placing==="overlay-p1"){setPlacing({step:"overlay-p2",p1:latlng});return;}
-      if(placing?.step==="overlay-p2"){
-        const bounds=L.latLngBounds(placing.p1,latlng);
-        const id=crypto.randomUUID();
-        const ll=L.imageOverlay(pendingOverlay,bounds,{opacity:0.8,interactive:false});
-        ll.addTo(map);
-        setImageOverlays(p=>[...p,{id,name:"Raster overlay",src:pendingOverlay,bounds,opacity:0.8,leafLayer:ll,visible:true}]);
-        setPendingOverlay(null); setPlacing(null); return;
       }
       if(curvedStep==="p1"){curvedP1Ref.current=latlng;setCurvedStep("p2");return;}
       if(curvedStep==="p2"){
         setCurvedLabels(p=>[...p,{id:crypto.randomUUID(),text:curvedDraft.text,color:curvedDraft.color,size:curvedDraft.size,p1:curvedP1Ref.current,p2:latlng}]);
         setCurvedStep(null);return;
       }
-      if(drawMode==="none") return;
+      if(drawMode==="none"){setSelectedId(null);return;}
 
       if(drawMode==="circle"){
         if(!ds.points.length){ds.points=[latlng];ds.center=latlng;}
         else{
           const r=ds.center.distanceTo(latlng);
           if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
-          // Convert to editable polygon instead of native circle
           const pts=circleToPolygon(ds.center,r,32);
           const poly=L.polygon(pts,{color:drawStyle.color,weight:drawStyle.weight,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity}).addTo(map);
-          commitDrawn(poly,"Circle",pts);
-          ds.points=[];ds.center=null;
+          commitDrawn(poly,"Circle",pts); ds.points=[];ds.center=null;
         }
         return;
       }
@@ -304,8 +399,7 @@ export default function App() {
         else{
           if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
           const poly=L.rectangle(L.latLngBounds(ds.points[0],latlng),{color:drawStyle.color,weight:drawStyle.weight,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity}).addTo(map);
-          commitDrawn(poly,"Rectangle",null);
-          ds.points=[];
+          commitDrawn(poly,"Rectangle",null); ds.points=[];
         }
         return;
       }
@@ -315,8 +409,7 @@ export default function App() {
         if(ds.points.length>1){
           ds.preview=(drawMode==="polygon"?L.polygon:L.polyline)(ds.points,{color:drawStyle.color,weight:drawStyle.weight,fill:drawMode==="polygon",fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity,dashArray:"6,4"}).addTo(map);
         }
-        setDrawActive(true);
-        return;
+        setDrawActive(true); return;
       }
     };
 
@@ -343,7 +436,14 @@ export default function App() {
       if(e.key==="Escape"){
         if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
         ds.points=[]; setDrawMode("none"); setDrawActive(false);
-        setCurvedStep(null); setPlacing(null);
+        setCurvedStep(null); setPlacing(null); setSelectedId(null);
+      }
+      if((e.key==="Delete"||e.key==="Backspace")&&selectedId&&document.activeElement.tagName!=="INPUT"&&document.activeElement.tagName!=="TEXTAREA"){
+        setTextEls(p=>p.filter(x=>x.id!==selectedId));
+        setCallouts(p=>p.filter(x=>x.id!==selectedId));
+        setCanvasImages(p=>p.filter(x=>x.id!==selectedId));
+        setCurvedLabels(p=>p.filter(x=>x.id!==selectedId));
+        setSelectedId(null);
       }
     };
 
@@ -352,29 +452,26 @@ export default function App() {
     const isPlacing=placing||curvedStep||drawMode!=="none";
     map.getContainer().style.cursor=isPlacing?"crosshair":"";
     return ()=>{map.off("click",onClick);map.off("mousemove",onMouseMove);map.off("dblclick",onDblClick);window.removeEventListener("keydown",onKey);};
-  },[placing,curvedStep,drawMode,drawStyle,annotDraft,calloutDraft,pendingOverlay]);
+  },[placing,curvedStep,drawMode,drawStyle,textDraft,calloutDraft,selectedId]);
 
-  // ── Commit drawn shape ────────────────────────────────────────────────────
+  // ── Commit drawn shape ─────────────────────────────────────────────────────
   const commitDrawn=useCallback((layer,name,editablePoints)=>{
     setLayers(p=>[...p,{
       id:crypto.randomUUID(),name,layer,_geojson:null,visible:true,isPoint:false,isDrawn:true,
-      editablePoints, // for blob editing
-      color:drawStyle.color,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity,
+      editablePoints,color:drawStyle.color,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity,
       fillPattern:"solid",weight:drawStyle.weight,layerOpacity:1,
-      legendLabel:name,includeInLegend:false,
-      propKeys:[],showLabels:false,labelField:"",
+      legendLabel:name,includeInLegend:false,propKeys:[],showLabels:false,labelField:"",
     }]);
   },[drawStyle]);
 
-  // ── GeoJSON layer builder ─────────────────────────────────────────────────
+  // ── GeoJSON layer builder ──────────────────────────────────────────────────
   const buildLeafletLayer=useCallback((geojson,cfg)=>{
     const map=mapRef.current;if(!map||!geojson) return null;
     injectSvgPatterns(map,cfg.fillColor);
     let fillStyle={};
-    if(cfg.fillPattern==="none")   fillStyle={fill:false,fillOpacity:0};
+    if(cfg.fillPattern==="none")       fillStyle={fill:false,fillOpacity:0};
     else if(cfg.fillPattern==="solid") fillStyle={fill:true,fillColor:cfg.fillColor,fillOpacity:+cfg.fillOpacity};
-    else fillStyle={fill:true,fillColor:`url(#mvp-${cfg.fillPattern})`,fillOpacity:1};
-
+    else                               fillStyle={fill:true,fillColor:`url(#mvp-${cfg.fillPattern})`,fillOpacity:1};
     return L.geoJSON(geojson,{
       style:()=>({color:cfg.color,weight:+cfg.weight,opacity:+cfg.layerOpacity,...fillStyle}),
       pointToLayer:(_,latlng)=>L.marker(latlng,{icon:makeMarkerIcon(cfg.markerType,cfg.markerColor,+cfg.pointRadius*2),opacity:+cfg.layerOpacity}),
@@ -406,9 +503,7 @@ export default function App() {
     const cfg={
       id:crypto.randomUUID(),name,_geojson:geojson,visible:true,isPoint,isDrawn:false,
       color:"#4e8cff",fillColor:"#4e8cff",fillOpacity:0.35,fillPattern:"solid",
-      weight:2,pointRadius:6,
-      markerType:isPoint?"circle":"circle",  // default to circle/dot for drillholes
-      markerColor:"#1a1a1a",
+      weight:2,pointRadius:6,markerType:"circle",markerColor:"#1a1a1a",
       layerOpacity:1,showLabels:false,labelField:propKeys[0]??"",
       propKeys,legendLabel:name,includeInLegend:true,
     };
@@ -461,10 +556,6 @@ export default function App() {
     });
   };
 
-  const updateOverlayOpacity=(id,opacity)=>{setImageOverlays(p=>p.map(o=>{if(o.id!==id)return o;o.leafLayer.setOpacity(opacity);return{...o,opacity};}));};
-  const toggleOverlay=(id)=>{const map=mapRef.current;setImageOverlays(p=>p.map(o=>{if(o.id!==id)return o;if(o.visible)map.removeLayer(o.leafLayer);else o.leafLayer.addTo(map);return{...o,visible:!o.visible};}));};
-  const removeOverlay=(id)=>{const map=mapRef.current;setImageOverlays(p=>{const t=p.find(o=>o.id===id);if(t)map?.removeLayer(t.leafLayer);return p.filter(o=>o.id!==id);});};
-
   const fitAll=()=>{
     const map=mapRef.current;if(!map)return;
     const vis=layers.filter(l=>l.visible&&l.layer).map(l=>l.layer);
@@ -481,17 +572,21 @@ export default function App() {
   // ── PNG Export ────────────────────────────────────────────────────────────
   const doExportPNG=async()=>{
     setExporting(true);
+    setSelectedId(null);
+    const sidebar=document.querySelector(".sidebar");
+    const mapSide=document.querySelector(".map-side");
     try{
       await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
-      const sidebar=document.querySelector(".sidebar");
-      const mapSide=document.querySelector(".map-side");
-      sidebar.style.display="none"; mapSide.style.width="100vw";
+      if(sidebar) sidebar.style.display="none";
+      if(mapSide) mapSide.style.width="100vw";
       mapRef.current.invalidateSize();
-      await new Promise(r=>setTimeout(r,600));
+      await new Promise(r=>setTimeout(r,700));
       await new Promise(resolve=>{
         let total=0,done=0;
-        document.querySelectorAll(".leaflet-tile-container img").forEach(img=>{if(!img.complete){total++;img.addEventListener("load",()=>{done++;if(done>=total)resolve();},{once:true});img.addEventListener("error",()=>{done++;if(done>=total)resolve();},{once:true});}});
-        if(!total)resolve(); setTimeout(resolve,6000);
+        document.querySelectorAll(".leaflet-tile-container img").forEach(img=>{
+          if(!img.complete){total++;img.addEventListener("load",()=>{done++;if(done>=total)resolve();},{once:true});img.addEventListener("error",()=>{done++;if(done>=total)resolve();},{once:true});}
+        });
+        if(!total)resolve(); setTimeout(resolve,8000);
       });
       const surface=document.querySelector(".export-surface");
       const canvas=await window.html2canvas(surface,{
@@ -507,138 +602,100 @@ export default function App() {
             });
           });
           doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(el=>{el.style.visibility="visible";el.style.display="block";el.style.overflow="visible";});
+          // Hide resize handles and selection borders
+          doc.querySelectorAll(".rdrag > div[style]").forEach(el=>{
+            if(el.style.cursor&&el.style.cursor.includes("resize")) el.style.display="none";
+          });
+          doc.querySelectorAll("[style*='dashed']").forEach(el=>{ el.style.borderStyle="none"; });
         },
       });
-      sidebar.style.display=""; mapSide.style.width=""; mapRef.current.invalidateSize();
       const a=document.createElement("a");
       a.download=`${title.toLowerCase().replace(/\s+/g,"-")}-map.png`;
       a.href=canvas.toDataURL("image/png"); a.click();
     }catch(err){
       console.error(err);
-      const sidebar=document.querySelector(".sidebar");
-      const mapSide=document.querySelector(".map-side");
-      if(sidebar)sidebar.style.display=""; if(mapSide)mapSide.style.width="";
+      alert("PNG export failed. Switch to 🗺 Street basemap — satellite tiles block cross-origin capture.\n\n"+err.message);
+    }finally{
+      if(sidebar) sidebar.style.display="";
+      if(mapSide) mapSide.style.width="";
       mapRef.current?.invalidateSize();
-      alert("PNG export failed. Switch to 🗺 Street basemap — satellite tiles block cross-origin capture.");
-    }finally{setExporting(false);}
+      setExporting(false);
+    }
   };
 
-  // ── SVG Export (vector layers + map overlays, no raster tiles) ───────────
+  // ── SVG Export ────────────────────────────────────────────────────────────
   const doExportSVG=()=>{
     const map=mapRef.current; if(!map) return;
     const surface=document.querySelector(".export-surface");
     const W=surface.offsetWidth, H=surface.offsetHeight;
-
-    // Grab Leaflet overlay SVG content
     const overlaySvg=map.getPanes().overlayPane?.querySelector("svg");
     let overlayContent="";
-    if(overlaySvg){
-      const clone=overlaySvg.cloneNode(true);
-      // Remove transform, convert to absolute coords
-      clone.style.transform=""; clone.removeAttribute("transform");
-      overlayContent=clone.innerHTML;
-    }
-
-    // Grab marker pane (convert marker img elements to SVG circles as fallback)
+    if(overlaySvg){ const clone=overlaySvg.cloneNode(true); clone.style.transform=""; clone.removeAttribute("transform"); overlayContent=clone.innerHTML; }
     const markerPts=[];
     map.getPanes().markerPane?.querySelectorAll(".leaflet-marker-icon").forEach(img=>{
-      const rect=img.getBoundingClientRect();
-      const surfRect=surface.getBoundingClientRect();
-      markerPts.push({x:rect.left-surfRect.left+rect.width/2, y:rect.top-surfRect.top+rect.height/2, src:img.src, w:rect.width, h:rect.height});
+      const rect=img.getBoundingClientRect(), surfRect=surface.getBoundingClientRect();
+      markerPts.push({x:rect.left-surfRect.left+rect.width/2,y:rect.top-surfRect.top+rect.height/2,src:img.src,w:rect.width,h:rect.height});
     });
-
-    // Tooltip labels
     const tooltipSvg=[];
     map.getPanes().tooltipPane?.querySelectorAll(".mv-label").forEach(el=>{
-      const rect=el.getBoundingClientRect(); const surfRect=surface.getBoundingClientRect();
+      const rect=el.getBoundingClientRect(),surfRect=surface.getBoundingClientRect();
       tooltipSvg.push(`<text x="${rect.left-surfRect.left}" y="${rect.top-surfRect.top+11}" font-size="11" font-family="Arial" font-weight="600" fill="#111">${escapeXml(el.textContent)}</text>`);
     });
-
-    // Legend
-    const legendEl=surface.querySelector(".drag-el .legend-block, .drag-el");
-    let legendSvg="";
-    if(showLegend&&legendItems.length){
-      const lx=legendPos.x, ly=legendPos.y??H-200;
-      const lh=legendItems.length*24+20;
-      legendSvg=`<g>
-        <rect x="${lx}" y="${ly}" width="260" height="${lh}" fill="rgba(255,255,255,0.96)" stroke="#b8c4ce" stroke-width="1" rx="2"/>
-        ${legendItems.map((item,i)=>`
-          <g transform="translate(${lx+10},${ly+14+i*24})">
-            ${item.type==="line"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.color}" stroke-width="2.5"/>`
-              :item.type==="marker"?`<circle cx="9" cy="9" r="7" fill="${item.color}"/>`
-              :`<rect x="0" y="0" width="18" height="18" fill="${item.color}"/>`}
-            <text x="26" y="13" font-size="13" font-family="Arial" fill="#1a2232">${escapeXml(item.text)}</text>
-          </g>`).join("")}
-      </g>`;
-    }
-
-    // Title block
-    const tx=titlePos.x??W-250, ty=titlePos.y;
-    const titleSvg=`<g>
-      <rect x="${tx}" y="${ty}" width="240" height="62" fill="rgba(8,30,92,0.96)"/>
+    const mapW2=containerRef.current?.offsetWidth??900;
+    const tx=titlePos.x!==null?titlePos.x:mapW2-254, ty=titlePos.y, tw=titlePos.w??240, th=titlePos.h??62;
+    const lx=legendPos.x, ly=legendPos.y??(H-200), lw=legendPos.w??200, lh2=legendItems.length*24+20;
+    const legendSvg=showLegend&&legendItems.length?`<g>
+      <rect x="${lx}" y="${ly}" width="${lw}" height="${lh2}" fill="rgba(255,255,255,0.96)" stroke="#b8c4ce" stroke-width="1" rx="2"/>
+      ${legendItems.map((item,i)=>`<g transform="translate(${lx+10},${ly+14+i*24})">
+        ${item.type==="line"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.color}" stroke-width="2.5"/>`:item.type==="marker"?`<circle cx="9" cy="9" r="7" fill="${item.color}"/>`:`<rect x="0" y="0" width="18" height="18" fill="${item.color}"/>`}
+        <text x="26" y="13" font-size="13" font-family="Arial" fill="#1a2232">${escapeXml(item.text)}</text>
+      </g>`).join("")}
+    </g>`:"";
+    const titleSvg=`<g><rect x="${tx}" y="${ty}" width="${tw}" height="${th}" fill="rgba(8,30,92,0.96)"/>
       <text x="${tx+14}" y="${ty+28}" font-size="18" font-family="Arial" font-weight="800" fill="#fff">${escapeXml(title)}</text>
       <text x="${tx+14}" y="${ty+48}" font-size="11" font-family="Arial" fill="rgba(255,255,255,0.8)">${escapeXml(subtitle)}</text>
     </g>`;
-
-    // Annotations
-    const annotSvg=annotations.map(a=>`<g>
-      <rect x="${a.x}" y="${a.y}" width="${Math.max(80,a.text.length*8+16)}" height="32" fill="${a.color}"/>
-      <text x="${a.x+10}" y="${a.y+21}" font-size="13" font-family="Arial" font-weight="700" fill="#fff">${escapeXml(a.text)}</text>
-    </g>`).join("");
-
-    // Callouts
+    const textSvg=textEls.map(t=>`<foreignObject x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}"><div xmlns="http://www.w3.org/1999/xhtml" style="color:${t.color};font-size:${t.size}px;font-weight:${t.bold?"bold":"normal"};font-family:Arial;padding:4px;white-space:pre-wrap;">${escapeXml(t.text)}</div></foreignObject>`).join("");
     const calloutSvg=callouts.map(c=>{
       const lines=c.text.replace(/\\n/g,"\n").split("\n");
-      const w=Math.max(80,Math.max(...lines.map(l=>l.length))*7.5+24);
-      const h=lines.length*18+14;
-      return `<g>
-        <line x1="${c.pinX}" y1="${c.pinY}" x2="${c.boxX+w/2}" y2="${c.boxY+h}" stroke="${c.borderColor}" stroke-width="1.5" stroke-dasharray="5,3"/>
+      const bw=c.w??Math.max(120,Math.max(...lines.map(l=>l.length))*7.5+24), bh=c.h??(lines.length*18+14);
+      return `<g><line x1="${c.pinX}" y1="${c.pinY}" x2="${c.boxX+bw/2}" y2="${c.boxY+bh}" stroke="${c.borderColor}" stroke-width="1.5" stroke-dasharray="5,3"/>
         <circle cx="${c.pinX}" cy="${c.pinY}" r="5" fill="${c.borderColor}"/>
-        <rect x="${c.boxX}" y="${c.boxY}" width="${w}" height="${h}" fill="${c.bgColor}" stroke="${c.borderColor}" stroke-width="1.5" rx="3"/>
+        <rect x="${c.boxX}" y="${c.boxY}" width="${bw}" height="${bh}" fill="${c.bgColor}" stroke="${c.borderColor}" stroke-width="1.5" rx="3"/>
         ${lines.map((line,i)=>`<text x="${c.boxX+10}" y="${c.boxY+15+i*18}" font-size="12" font-family="Arial" font-weight="600" fill="${c.borderColor}">${escapeXml(line)}</text>`).join("")}
       </g>`;
     }).join("");
-
-    // Curved labels
     const curveSvg=curvedLabels.map(cl=>{
       try{
-        const p1=map.latLngToContainerPoint(cl.p1);
-        const p2=map.latLngToContainerPoint(cl.p2);
-        const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2;
-        const dx=p2.x-p1.x, dy=p2.y-p1.y;
+        const p1=map.latLngToContainerPoint(cl.p1), p2=map.latLngToContainerPoint(cl.p2);
+        const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2, dx=p2.x-p1.x, dy=p2.y-p1.y;
         const pid=`svgcvp-${cl.id}`;
         return `<defs><path id="${pid}" d="M ${p1.x} ${p1.y} Q ${mx-dy*0.25} ${my+dx*0.25} ${p2.x} ${p2.y}"/></defs>
-          <text fill="${cl.color}" font-size="${cl.size}" font-family="Arial" font-weight="700" letter-spacing="2">
-            <textPath href="#${pid}" startOffset="50%" text-anchor="middle">${escapeXml(cl.text)}</textPath>
-          </text>`;
+          <text fill="${cl.color}" font-size="${cl.size}" font-family="Arial" font-weight="700" letter-spacing="2"><textPath href="#${pid}" startOffset="50%" text-anchor="middle">${escapeXml(cl.text)}</textPath></text>`;
       }catch{return "";}
     }).join("");
-
-    // North arrow
-    const naSvg=northArrow?`<g transform="translate(20,20)">
-      <circle cx="22" cy="22" r="20" fill="rgba(255,255,255,0.88)" stroke="#aaa" stroke-width="1"/>
-      <polygon points="22,4 28,26 22,21 16,26" fill="#111"/>
-      <polygon points="22,40 28,18 22,23 16,18" fill="#eee" stroke="#111" stroke-width="0.8"/>
-      <text x="22" y="50" text-anchor="middle" font-size="10" font-weight="bold" fill="#111" font-family="Arial">N</text>
-    </g>`:"";
-
-    // Markers as SVG (base64 embedded images)
+    const canvasImgSvg=canvasImages.filter(o=>o.visible!==false).map(o=>`<image href="${o.src}" x="${o.px}" y="${o.py}" width="${o.pw}" height="${o.ph}" opacity="${o.opacity}"/>`).join("");
+    const naSvg=northArrow?`<g transform="translate(20,20)"><circle cx="22" cy="22" r="20" fill="rgba(255,255,255,0.88)" stroke="#aaa" stroke-width="1"/><polygon points="20,4 27,28 20,23 13,28" fill="#111"/><polygon points="20,40 27,18 20,23 13,18" fill="#eee" stroke="#111" stroke-width="0.8"/><text x="20" y="50" text-anchor="middle" font-size="10" font-weight="bold" fill="#111" font-family="Arial">N</text></g>`:"";
+    const logoSvg=logo?`<image href="${logo}" x="${logoPos.x}" y="${logoPos.y}" width="${logoPos.w}" height="${logoPos.h}"/>`:"";
+    const insetX2=insetPos.x!==null?insetPos.x:mapW2-208;
+    const insetSvg=showInset&&insetImage?`<image href="${insetImage}" x="${insetX2}" y="${insetPos.y}" width="${insetPos.w}" height="${insetPos.h}"/>`:"";
     const markersSvg=markerPts.map(pt=>`<image href="${pt.src}" x="${pt.x-pt.w/2}" y="${pt.y-pt.h/2}" width="${pt.w}" height="${pt.h}"/>`).join("");
-
     const svg=`<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}">
   <rect width="${W}" height="${H}" fill="#e8e8e8"/>
+  <g id="canvas-images">${canvasImgSvg}</g>
   <g id="vectors">${overlayContent}</g>
   <g id="markers">${markersSvg}</g>
   <g id="labels">${tooltipSvg.join("")}</g>
   <g id="curved-text">${curveSvg}</g>
   <g id="callouts">${calloutSvg}</g>
-  <g id="annotations">${annotSvg}</g>
+  <g id="text-elements">${textSvg}</g>
   <g id="title">${titleSvg}</g>
+  <g id="logo">${logoSvg}</g>
+  <g id="inset">${insetSvg}</g>
   <g id="legend">${legendSvg}</g>
   <g id="north-arrow">${naSvg}</g>
 </svg>`;
-
     const blob=new Blob([svg],{type:"image/svg+xml;charset=utf-8"});
     const a=document.createElement("a");
     a.href=URL.createObjectURL(blob); a.download=`${title.toLowerCase().replace(/\s+/g,"-")}-map.svg`; a.click();
@@ -652,10 +709,8 @@ export default function App() {
       <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:1000}}>
         {curvedLabels.map(cl=>{
           try{
-            const p1=map.latLngToContainerPoint(cl.p1);
-            const p2=map.latLngToContainerPoint(cl.p2);
-            const mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;
-            const dx=p2.x-p1.x,dy=p2.y-p1.y;
+            const p1=map.latLngToContainerPoint(cl.p1), p2=map.latLngToContainerPoint(cl.p2);
+            const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2, dx=p2.x-p1.x, dy=p2.y-p1.y;
             const pid=`cvp-${cl.id}`;
             return(
               <g key={cl.id}>
@@ -671,13 +726,24 @@ export default function App() {
     );
   };
 
-  const mapW = containerRef.current?.offsetWidth??900;
-  const titleX = titlePos.x!==null ? titlePos.x : mapW-254;
-  const insetX = insetPos.x!==null ? insetPos.x : mapW-208;
+  const mapW=containerRef.current?.offsetWidth??900;
+  const mapH=containerRef.current?.offsetHeight??800;
+  const titleX=titlePos.x!==null?titlePos.x:mapW-254;
+  const insetX=insetPos.x!==null?insetPos.x:mapW-208;
+
+  const snapElements=[
+    {id:"title",x:titleX,y:titlePos.y,w:titlePos.w??240,h:titlePos.h??62},
+    {id:"logo",x:logoPos.x,y:logoPos.y,w:logoPos.w,h:logoPos.h},
+    {id:"inset",x:insetX,y:insetPos.y,w:insetPos.w,h:insetPos.h},
+    {id:"legend",x:legendPos.x,y:legendPos.y??(mapH-200),w:legendPos.w??200,h:legendPos.h??100},
+    ...textEls.map(t=>({id:t.id,x:t.x,y:t.y,w:t.w,h:t.h})),
+    ...callouts.map(c=>({id:c.id,x:c.boxX,y:c.boxY,w:c.w??120,h:c.h??40})),
+    ...canvasImages.map(o=>({id:o.id,x:o.px,y:o.py,w:o.pw,h:o.ph})),
+  ];
 
   // ── Render ────────────────────────────────────────────────────────────────
   return(
-    <div className="app-shell">
+    <div className="app-shell" onClick={()=>setSelectedId(null)}>
       <aside className="sidebar">
         <div className="sidebar-header"><span className="app-wordmark">◈ Mapviewer</span></div>
 
@@ -691,12 +757,12 @@ export default function App() {
         <Sec title="Map Labels">
           <Field label="Title"><input value={title} onChange={e=>setTitle(e.target.value)}/></Field>
           <Field label="Subtitle"><input value={subtitle} onChange={e=>setSubtitle(e.target.value)}/></Field>
-          <div className="hint-text">Drag title on map to reposition</div>
+          <div className="hint-text">Drag &amp; resize title block on map</div>
         </Sec>
 
         <Sec title="Branding">
           <Field label="Logo"><input type="file" accept="image/*" onChange={e=>e.target.files?.[0]&&loadImageFile(e.target.files[0],setLogo)}/></Field>
-          {logo&&<button className="btn-ghost" onClick={()=>setLogo(null)}>✕ Remove</button>}
+          {logo&&<button className="btn-ghost" onClick={()=>setLogo(null)}>✕ Remove logo</button>}
         </Sec>
 
         <Sec title="Basemap">
@@ -710,27 +776,30 @@ export default function App() {
           <Toggle label="North Arrow" checked={northArrow} onChange={setNorthArrow}/>
           <Toggle label="Legend"      checked={showLegend} onChange={setShowLegend}/>
           <Toggle label="Inset Map"   checked={showInset}  onChange={setShowInset}/>
-          {showInset&&<>
-            <div style={{marginTop:8}}>
-              <div className="field-label">Upload inset image</div>
-              <input type="file" accept="image/*" onChange={e=>e.target.files?.[0]&&loadImageFile(e.target.files[0],setInsetImage)}/>
-              {insetImage&&<button className="btn-ghost" onClick={()=>setInsetImage(null)}>✕ Remove</button>}
-            </div>
-          </>}
+          {showInset&&<div style={{marginTop:8}}>
+            <div className="field-label">Upload inset image</div>
+            <input type="file" accept="image/*" onChange={e=>e.target.files?.[0]&&loadImageFile(e.target.files[0],setInsetImage)}/>
+            {insetImage&&<button className="btn-ghost" onClick={()=>setInsetImage(null)}>✕ Remove</button>}
+          </div>}
         </Sec>
 
         <Sec title="Image Overlay">
-          <Field label="Upload raster (PNG/JPG)">
-            <input type="file" accept="image/*" onChange={e=>e.target.files?.[0]&&loadImageFile(e.target.files[0],src=>{setPendingOverlay(src);setPlacing("overlay-p1");})}/>
+          <Field label="Upload image (PNG/JPG)">
+            <input type="file" accept="image/*" onChange={e=>{
+              const f=e.target.files?.[0]; if(!f)return;
+              loadImageFile(f,src=>{
+                const cw=containerRef.current?.offsetWidth??900, ch=containerRef.current?.offsetHeight??700;
+                setCanvasImages(p=>[...p,{id:crypto.randomUUID(),name:f.name,src,px:cw/2-150,py:ch/2-100,pw:300,ph:200,opacity:0.8,visible:true}]);
+              });
+            }}/>
           </Field>
-          {placing==="overlay-p1"&&<div className="place-hint">Click NW (top-left) corner on map</div>}
-          {placing?.step==="overlay-p2"&&<div className="place-hint">Now click SE (bottom-right) corner</div>}
-          {imageOverlays.map(o=>(
+          <div className="hint-text">Drag &amp; resize on map. Click to select, Delete key to remove.</div>
+          {canvasImages.map(o=>(
             <div key={o.id} className="overlay-row">
               <span className="overlay-name">{o.name}</span>
-              <input type="range" min="0" max="1" step="0.05" value={o.opacity} onChange={e=>updateOverlayOpacity(o.id,+e.target.value)} style={{flex:1}}/>
-              <button className="btn-icon-sm" onClick={()=>toggleOverlay(o.id)}>{o.visible?"👁":"🚫"}</button>
-              <button className="btn-icon-sm" onClick={()=>removeOverlay(o.id)}>✕</button>
+              <input type="range" min="0" max="1" step="0.05" value={o.opacity} onChange={e=>setCanvasImages(p=>p.map(x=>x.id===o.id?{...x,opacity:+e.target.value}:x))} style={{flex:1}}/>
+              <button className="btn-icon-sm" onClick={()=>setCanvasImages(p=>p.map(x=>x.id===o.id?{...x,visible:!x.visible}:x))}>{o.visible?"👁":"🚫"}</button>
+              <button className="btn-icon-sm" onClick={()=>setCanvasImages(p=>p.filter(x=>x.id!==o.id))}>✕</button>
             </div>
           ))}
         </Sec>
@@ -757,18 +826,22 @@ export default function App() {
           </div>
         </Sec>
 
-        <Sec title="Annotation Box">
-          <Field label="Text"><input placeholder="~$1B USD MARKET CAP" value={annotDraft.text} onChange={e=>setAnnotDraft(d=>({...d,text:e.target.value}))}/></Field>
-          <div className="color-pick-row"><span>Color</span><input type="color" value={annotDraft.color} onChange={e=>setAnnotDraft(d=>({...d,color:e.target.value}))}/></div>
-          <button className={`btn mt-8 w100${placing==="annot"?" btn-placing":""}`} onClick={()=>setPlacing(placing==="annot"?null:"annot")}>
-            {placing==="annot"?"🎯 Click map to place…":"＋ Place Box"}
+        <Sec title="Text">
+          <Field label="Content"><input placeholder="Add text…" value={textDraft.text} onChange={e=>setTextDraft(d=>({...d,text:e.target.value}))}/></Field>
+          <div className="color-trio">
+            <div><div className="field-label">Color</div><input type="color" value={textDraft.color} onChange={e=>setTextDraft(d=>({...d,color:e.target.value}))}/></div>
+            <div><div className="field-label">Size ({textDraft.size}px)</div><input type="range" min="10" max="64" value={textDraft.size} onChange={e=>setTextDraft(d=>({...d,size:+e.target.value}))}/></div>
+            <div style={{display:"flex",flexDirection:"column",gap:3}}><div className="field-label">Bold</div><input type="checkbox" checked={textDraft.bold} onChange={e=>setTextDraft(d=>({...d,bold:e.target.checked}))} style={{width:18,height:18}}/></div>
+          </div>
+          <button className={`btn mt-8 w100${placing==="text"?" btn-placing":""}`} onClick={()=>setPlacing(placing==="text"?null:"text")}>
+            {placing==="text"?"🎯 Click map to place…":"＋ Place Text"}
           </button>
-          <div className="hint-text">Drag boxes on map to reposition</div>
-          {annotations.map(a=>(
-            <div key={a.id} className="annot-row">
-              <span className="annot-swatch" style={{background:a.color}}/>
-              <input value={a.text} onChange={e=>setAnnotations(p=>p.map(x=>x.id===a.id?{...x,text:e.target.value}:x))}/>
-              <button className="btn-icon-sm" onClick={()=>setAnnotations(p=>p.filter(x=>x.id!==a.id))}>✕</button>
+          <div className="hint-text">Double-click to edit inline · Delete key removes selected</div>
+          {textEls.map(t=>(
+            <div key={t.id} className="annot-row">
+              <span style={{fontSize:11,color:t.color,fontWeight:t.bold?"bold":"normal",flexShrink:0,width:14}}>T</span>
+              <input value={t.text} onChange={e=>setTextEls(p=>p.map(x=>x.id===t.id?{...x,text:e.target.value}:x))}/>
+              <button className="btn-icon-sm" onClick={()=>setTextEls(p=>p.filter(x=>x.id!==t.id))}>✕</button>
             </div>
           ))}
         </Sec>
@@ -782,7 +855,7 @@ export default function App() {
           <button className={`btn mt-8 w100${placing==="callout"?" btn-placing":""}`} onClick={()=>setPlacing(placing==="callout"?null:"callout")}>
             {placing==="callout"?"🎯 Click pin location…":"＋ Place Callout"}
           </button>
-          <div className="hint-text">Drag pin dot and box separately on map</div>
+          <div className="hint-text">Double-click box to edit · Drag pin &amp; box separately · Delete to remove</div>
           {callouts.map(c=>(
             <div key={c.id} className="annot-row">
               <span className="annot-swatch" style={{background:c.borderColor,borderRadius:0}}/>
@@ -806,13 +879,14 @@ export default function App() {
             <div key={cl.id} className="annot-row">
               <span style={{fontSize:11,color:cl.color,fontWeight:700,flexShrink:0,width:14}}>A</span>
               <input value={cl.text} onChange={e=>setCurvedLabels(p=>p.map(x=>x.id===cl.id?{...x,text:e.target.value}:x))}/>
+              <input type="range" min="10" max="52" value={cl.size} onChange={e=>setCurvedLabels(p=>p.map(x=>x.id===cl.id?{...x,size:+e.target.value}:x))} style={{width:60}}/>
               <button className="btn-icon-sm" onClick={()=>setCurvedLabels(p=>p.filter(x=>x.id!==cl.id))}>✕</button>
             </div>
           ))}
         </Sec>
 
         <Sec title="Legend Editor">
-          <div className="hint-text" style={{marginBottom:6}}>Drag legend on map to reposition</div>
+          <div className="hint-text" style={{marginBottom:6}}>Drag &amp; resize legend on map</div>
           <div className="legend-editor-row">
             <input placeholder="Label" value={legendDraft.text} onChange={e=>setLegendDraft(d=>({...d,text:e.target.value}))} style={{flex:2}}/>
             <select value={legendDraft.type} onChange={e=>setLegendDraft(d=>({...d,type:e.target.value}))} style={{flex:1}}>
@@ -840,6 +914,25 @@ export default function App() {
           }}>↓ Import from layers</button>}
         </Sec>
 
+        <Sec title="Groups">
+          <div className="hint-text" style={{marginBottom:6}}>Click element on map to select, then create group</div>
+          <button className="btn w100" disabled={!selectedId} onClick={()=>{
+            if(!selectedId)return;
+            setGroups(g=>[...g,{id:crypto.randomUUID(),memberIds:[selectedId]}]);
+          }}>＋ New Group from Selected</button>
+          {groups.map(gr=>(
+            <div key={gr.id} style={{marginTop:6,padding:"6px 8px",background:"#181d28",borderRadius:4,border:"1px solid #252e42"}}>
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:4}}>
+                <span style={{fontSize:11,color:"#8896b0"}}>Group · {gr.memberIds.length} items</span>
+                <button className="btn-ghost" onClick={()=>setGroups(g=>g.filter(x=>x.id!==gr.id))}>Ungroup</button>
+              </div>
+              {selectedId&&!gr.memberIds.includes(selectedId)&&(
+                <button className="btn-ghost" style={{color:"#7cc67c"}} onClick={()=>setGroups(g=>g.map(x=>x.id===gr.id?{...x,memberIds:[...x.memberIds,selectedId]}:x))}>+ Add selected</button>
+              )}
+            </div>
+          ))}
+        </Sec>
+
         <Sec title="Export">
           <button className="btn w100" onClick={fitAll} style={{marginBottom:6}}>Fit All Layers</button>
           <div className="row2" style={{marginBottom:4}}>
@@ -847,53 +940,79 @@ export default function App() {
             <button className={`btn${exportType==="svg"?" draw-active":""}`} onClick={()=>setExportType("svg")}>SVG</button>
           </div>
           <button className={`btn btn-export w100${exporting?" btn-export-working":""}`}
-            onClick={()=>exportType==="svg"?doExportSVG():doExportPNG()}
-            disabled={exporting}>
+            onClick={()=>exportType==="svg"?doExportSVG():doExportPNG()} disabled={exporting}>
             {exporting?"Exporting…":"⬇ Export"}
           </button>
-          <div className="export-note">
-            {exportType==="png"?"Use Street basemap · PNG captures full map":"SVG = vector layers only, designer-editable"}
-          </div>
+          <div className="export-note">{exportType==="png"?"Street basemap recommended for PNG export":"SVG = vector layers only, designer-editable"}</div>
         </Sec>
 
         <Sec title={`Layers${layers.length?` (${layers.length})`:""}`}>
           {layers.length===0?<div className="empty-hint">No layers yet.</div>
             :layers.map((l,idx)=>(
               <LayerCard key={l.id} l={l} idx={idx} total={layers.length}
-                onUpdate={p=>updateLayer(l.id,p)}
-                onToggle={()=>toggleLayer(l.id)}
-                onRemove={()=>removeLayer(l.id)}
-                onMove={dir=>moveLayer(l.id,dir)}
-              />
+                onUpdate={p=>updateLayer(l.id,p)} onToggle={()=>toggleLayer(l.id)}
+                onRemove={()=>removeLayer(l.id)} onMove={dir=>moveLayer(l.id,dir)}/>
             ))
           }
         </Sec>
       </aside>
 
       {/* MAP SURFACE */}
-      <div className="map-side export-surface" ref={containerRef}>
+      <div className="map-side export-surface" ref={containerRef} onClick={()=>setSelectedId(null)}>
         <div id="map" style={{width:"100%",height:"100%"}}/>
-
         {renderCurvedLabels()}
-
-        {/* Snap grid — shows when any drag is happening */}
         <SnapGrid active={draggingAny} containerRef={containerRef}/>
+
+        {/* Canvas image overlays */}
+        {canvasImages.filter(o=>o.visible!==false).map(o=>(
+          <CanvasImageOverlay key={o.id} ov={o}
+            onChange={patch=>setCanvasImages(p=>p.map(x=>x.id===o.id?{...x,...patch}:x))}
+            onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+            selected={selectedId===o.id} onSelect={setSelectedId}
+            snapElements={snapElements} containerW={mapW} containerH={mapH}/>
+        ))}
 
         {/* Callout boxes */}
         {callouts.map(c=>(
-          <CalloutBox key={c.id} c={c} onChange={patch=>setCallouts(p=>p.map(x=>x.id===c.id?{...x,...patch}:x))}/>
+          <CalloutBox key={c.id} c={c}
+            onChange={patch=>setCallouts(p=>p.map(x=>x.id===c.id?{...x,...patch}:x))}
+            onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+            selected={selectedId===c.id} onSelect={setSelectedId}
+            snapElements={snapElements} containerW={mapW} containerH={mapH}/>
         ))}
 
-        {/* Draggable title */}
-        <DraggableEl x={titleX} y={titlePos.y} onMove={p=>{setTitlePos(p);setDraggingAny(true);}} className="title-block">
-          <div className="title-main" onMouseUp={()=>setDraggingAny(false)}>{title}</div>
-          <div className="title-sub">{subtitle}</div>
-        </DraggableEl>
+        {/* Free text elements */}
+        {textEls.map(t=>(
+          <TextEl key={t.id} el={t}
+            onChange={patch=>setTextEls(p=>p.map(x=>x.id===t.id?{...x,...patch}:x))}
+            onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+            selected={selectedId===t.id} onSelect={setSelectedId}
+            snapElements={snapElements} containerW={mapW} containerH={mapH}/>
+        ))}
 
-        {/* Draggable logo */}
-        {logo&&<DraggableEl x={logoPos.x} y={logoPos.y} onMove={p=>{setLogoPos(p);setDraggingAny(true);}}>
-          <img src={logo} alt="Logo" className="logo-img" onMouseUp={()=>setDraggingAny(false)}/>
-        </DraggableEl>}
+        {/* Resizable title */}
+        <ResizableDraggable id="title" x={titleX} y={titlePos.y} w={titlePos.w??240} h={titlePos.h??62}
+          onMove={p=>setTitlePos(prev=>({...prev,...p}))} onResize={p=>setTitlePos(prev=>({...prev,...p}))}
+          onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+          snapElements={snapElements} containerW={mapW} containerH={mapH}
+          zIndex={selectedId==="title"?1010:1001}>
+          <div className="title-block" style={{width:"100%",height:"100%",overflow:"hidden"}} onClick={e=>{e.stopPropagation();setSelectedId("title");}}>
+            <div className="title-main">{title}</div>
+            <div className="title-sub">{subtitle}</div>
+          </div>
+        </ResizableDraggable>
+
+        {/* Resizable logo */}
+        {logo&&(
+          <ResizableDraggable id="logo" x={logoPos.x} y={logoPos.y} w={logoPos.w} h={logoPos.h}
+            onMove={p=>setLogoPos(prev=>({...prev,...p}))} onResize={p=>setLogoPos(prev=>({...prev,...p}))}
+            onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+            snapElements={snapElements} containerW={mapW} containerH={mapH}
+            zIndex={selectedId==="logo"?1010:1001}>
+            <img src={logo} alt="Logo" style={{width:"100%",height:"100%",objectFit:"contain",display:"block",pointerEvents:"none"}}
+              onClick={e=>{e.stopPropagation();setSelectedId("logo");}}/>
+          </ResizableDraggable>
+        )}
 
         {/* North arrow */}
         {northArrow&&<div className="north-arrow">
@@ -904,34 +1023,36 @@ export default function App() {
           </svg>
         </div>}
 
-        {/* Draggable inset */}
-        {showInset&&<DraggableEl x={insetX} y={insetPos.y} onMove={p=>{setInsetPos(p);setDraggingAny(true);}}>
-          <div className="inset-wrap" onMouseUp={()=>setDraggingAny(false)}>
-            {insetImage?<img src={insetImage} alt="Inset" style={{width:190,height:140,objectFit:"cover",display:"block"}}/>
-              :<div className="inset-empty"><span>Upload inset image in sidebar</span></div>}
-          </div>
-        </DraggableEl>}
+        {/* Resizable inset */}
+        {showInset&&(
+          <ResizableDraggable id="inset" x={insetX} y={insetPos.y} w={insetPos.w} h={insetPos.h}
+            onMove={p=>setInsetPos(prev=>({...prev,...p}))} onResize={p=>setInsetPos(prev=>({...prev,...p}))}
+            onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+            snapElements={snapElements} containerW={mapW} containerH={mapH}
+            zIndex={selectedId==="inset"?1010:1001}>
+            <div className="inset-wrap" style={{width:"100%",height:"100%"}} onClick={e=>{e.stopPropagation();setSelectedId("inset");}}>
+              {insetImage?<img src={insetImage} alt="Inset" style={{width:"100%",height:"100%",objectFit:"cover",display:"block"}}/>
+                :<div className="inset-empty"><span>Upload inset image in sidebar</span></div>}
+            </div>
+          </ResizableDraggable>
+        )}
 
-        {/* Draggable legend */}
-        {showLegend&&legendItems.length>0&&<DraggableEl
-          x={legendPos.x} y={legendPos.y??-1}
-          onMove={p=>{setLegendPos(p);setDraggingAny(true);}}
-          style={legendPos.y===-1?{bottom:30,top:"auto"}:{}}>
-          <div className="legend-block" onMouseUp={()=>setDraggingAny(false)}>
-            {legendItems.map(item=>(
-              <div key={item.id} className="legend-row">
-                <LegendSymbol item={item}/><span>{item.text}</span>
-              </div>
-            ))}
-          </div>
-        </DraggableEl>}
-
-        {/* Draggable annotation boxes */}
-        {annotations.map(a=>(
-          <DraggableEl key={a.id} x={a.x} y={a.y} onMove={p=>{setAnnotations(prev=>prev.map(x=>x.id===a.id?{...x,...p}:x));setDraggingAny(true);}}>
-            <div className="annotation-box" style={{background:a.color}} onMouseUp={()=>setDraggingAny(false)}>{a.text}</div>
-          </DraggableEl>
-        ))}
+        {/* Resizable legend */}
+        {showLegend&&legendItems.length>0&&(
+          <ResizableDraggable id="legend"
+            x={legendPos.x} y={legendPos.y??Math.max((containerRef.current?.offsetHeight??600)-200,20)}
+            w={legendPos.w??200} h={legendPos.h??Math.max(60,legendItems.length*24+20)}
+            onMove={p=>setLegendPos(prev=>({...prev,...p}))} onResize={p=>setLegendPos(prev=>({...prev,...p}))}
+            onDragStart={()=>setDraggingAny(true)} onDragEnd={()=>setDraggingAny(false)}
+            snapElements={snapElements} containerW={mapW} containerH={mapH}
+            zIndex={selectedId==="legend"?1010:1001}>
+            <div className="legend-block" style={{width:"100%",height:"100%",overflow:"auto"}} onClick={e=>{e.stopPropagation();setSelectedId("legend");}}>
+              {legendItems.map(item=>(
+                <div key={item.id} className="legend-row"><LegendSymbol item={item}/><span>{item.text}</span></div>
+              ))}
+            </div>
+          </ResizableDraggable>
+        )}
       </div>
     </div>
   );
@@ -944,7 +1065,6 @@ function LegendSymbol({item}){
   return <span className="legend-swatch" style={{background:item.color}}/>;
 }
 
-// ─── Sub-components ───────────────────────────────────────────────────────────
 function Sec({title,children}){return <div className="sec"><div className="sec-title">{title}</div>{children}</div>;}
 function Field({label,children}){return <div className="field"><div className="field-label">{label}</div>{children}</div>;}
 function Toggle({label,checked,onChange}){
