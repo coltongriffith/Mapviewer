@@ -928,8 +928,12 @@ const doExportSVG = () => {
         .map((f, idx) => {
           const [lng, lat] = f.geometry.coordinates;
           const pt = map.latLngToContainerPoint([lat, lng]);
-          const x = pt.x;
-          const y = pt.y;
+
+const mapRect = map.getContainer().getBoundingClientRect();
+const surfaceRect = surface.getBoundingClientRect();
+
+const x = pt.x + (mapRect.left - surfaceRect.left);
+const y = pt.y + (mapRect.top - surfaceRect.top);
 
           switch (markerType) {
             case "square":
