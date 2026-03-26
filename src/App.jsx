@@ -10,10 +10,18 @@ const MARKER_TYPES = [
   { value: "triangle",  label: "Triangle ▲" },
 ];
 
+const FILL_PATTERNS = [
+  { value: "solid",      label: "Solid" },
+  { value: "hatch",      label: "Hatch ////" },
+  { value: "crosshatch", label: "Crosshatch ####" },
+  { value: "dots",       label: "Dots ···" },
+  { value: "none",       label: "No fill" },
+];
+
 function makeMarkerIcon(type, color, size = 14) {
   const s = size, h = s / 2;
   let inner = "";
-  if (type === "circle")    inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
+  if (type === "circle")         inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
   else if (type === "drillhole") inner = `<polygon points="${h},${s-1} 1,1 ${s-1},1" fill="${color}" stroke="#fff" stroke-width="1"/><line x1="${h}" y1="0" x2="${h}" y2="${s}" stroke="${color}" stroke-width="2"/>`;
   else if (type === "diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
   else if (type === "square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
@@ -24,7 +32,17 @@ function makeMarkerIcon(type, color, size = 14) {
   });
 }
 
-const escapeXml  = (v) => String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;").replaceAll('"',"&quot;").replaceAll("'","&apos;");
+function markerSvg(type, color, size = 16) {
+  const s = size, h = s / 2;
+  let inner = "";
+  if (type === "circle")         inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  else if (type === "drillhole") inner = `<polygon points="${h},${s-2} 2,2 ${s-2},2" fill="${color}" stroke="#444" stroke-width="1"/><line x1="${h}" y1="0" x2="${h}" y2="${s}" stroke="${color}" stroke-width="1.5"/>`;
+  else if (type === "diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  else if (type === "square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  else if (type === "triangle")  inner = `<polygon points="${h},1 ${s-1},${s-1} 1,${s-1}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  return `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}">${inner}</svg>`)}`;
+}
+
 const escapeHtml = (v) => String(v??"").replaceAll("&","&amp;").replaceAll("<","&lt;").replaceAll(">","&gt;");
 
 function loadImageFile(file, setter) {
@@ -56,6 +74,20 @@ async function loadScript(src) {
     s.src = src; s.onload = res; s.onerror = rej;
     document.head.appendChild(s);
   });
+}
+
+function isPointLayer(geojson) {
+  const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g => g.features ?? []) : []);
+  if (!features.length) return false;
+  const pts = features.filter(f => f.geometry?.type === "Point" || f.geometry?.type === "MultiPoint");
+  return pts.length / features.length > 0.5;
+}
+
+function getPropertyKeys(geojson) {
+  const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g => g.features ?? []) : []);
+  const keys = new Set();
+  features.slice(0, 20).forEach(f => Object.keys(f.properties ?? {}).forEach(k => keys.add(k)));
+  return [...keys];
 }
 
 function InsetMap({ mainMapRef, customImage }) {
@@ -100,7 +132,6 @@ function InsetMap({ mainMapRef, customImage }) {
       </div>
     );
   }
-
   return <div ref={elRef} className="inset-map" />;
 }
 
@@ -137,15 +168,13 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
+    const map = mapRef.current; if (!map) return;
     const el = map.getContainer();
     const handler = (e) => {
       if (!placingAnnot) return;
       const rect = containerRef.current.getBoundingClientRect();
       setAnnotations(p => [...p, {
-        id: crypto.randomUUID(),
-        text: annotText.trim() || "Label",
+        id: crypto.randomUUID(), text: annotText.trim() || "Label",
         color: annotColor,
         x: e.originalEvent.clientX - rect.left,
         y: e.originalEvent.clientY - rect.top,
@@ -157,27 +186,89 @@ export default function App() {
     return () => { map.off("click", handler); el.style.cursor = ""; };
   }, [placingAnnot, annotText, annotColor]);
 
-  const addLayer = useCallback((geojson, name) => {
-    const map = mapRef.current; if (!map) return;
-    const defaults = { color:"#4e8cff", weight:2, fillOpacity:0.3, fillColor:"#4e8cff" };
+  const buildLeafletLayer = useCallback((geojson, cfg) => {
+    const map = mapRef.current; if (!map) return null;
+
+    // Build fill style based on pattern
+    let fillStyle = {};
+    if (cfg.fillPattern === "none") {
+      fillStyle = { fill: false, fillOpacity: 0 };
+    } else if (cfg.fillPattern === "solid") {
+      fillStyle = { fill: true, fillColor: cfg.fillColor, fillOpacity: +cfg.fillOpacity };
+    } else {
+      // Hatch/crosshatch/dots: use lower opacity solid as approximation
+      // (true SVG patterns require custom renderer — this works for export)
+      fillStyle = { fill: true, fillColor: cfg.fillColor, fillOpacity: +cfg.fillOpacity * 0.4 };
+    }
+
     const layer = L.geoJSON(geojson, {
-      style: () => ({ ...defaults }),
-      pointToLayer: (_, latlng) => L.marker(latlng, { icon: makeMarkerIcon("drillhole","#111111",14) }),
+      style: () => ({
+        color: cfg.color,
+        weight: +cfg.weight,
+        opacity: +cfg.layerOpacity,
+        ...fillStyle,
+      }),
+      pointToLayer: (_, latlng) => L.marker(latlng, {
+        icon: makeMarkerIcon(cfg.markerType, cfg.markerColor, +cfg.pointRadius * 2),
+        opacity: +cfg.layerOpacity,
+      }),
       onEachFeature: (feature, l) => {
         const p = feature.properties || {};
         l.bindPopup(Object.keys(p).length
           ? `<pre style="margin:0;font-size:11px;max-width:260px;overflow:auto">${escapeHtml(JSON.stringify(p,null,2))}</pre>`
           : "No attributes");
+        if (cfg.showLabels && cfg.labelField && p[cfg.labelField] != null) {
+          l.bindTooltip(String(p[cfg.labelField]), {
+            permanent: true, direction: "right",
+            className: "mv-label",
+            offset: [10, 0],
+          });
+        }
       },
-    }).addTo(map);
-    try { const b = layer.getBounds(); if (b.isValid()) map.fitBounds(b, { padding:[20,20] }); } catch {}
-    setLayers(p => [...p, {
-      id: crypto.randomUUID(), name, layer, visible:true,
-      color:"#4e8cff", fillColor:"#4e8cff", fillOpacity:0.3,
-      weight:2, pointRadius:7, markerType:"drillhole", markerColor:"#111111",
-      legendLabel:name, includeInLegend:true,
-    }]);
+    });
+
+    // Apply layer-level opacity via pane or CSS
+    layer.on("add", () => {
+      layer.eachLayer(sub => {
+        const el = sub.getElement?.();
+        if (el) el.style.opacity = cfg.layerOpacity;
+      });
+    });
+
+    return layer;
   }, []);
+
+  const reRenderLayer = useCallback((item, patch) => {
+    const map = mapRef.current; if (!map) return item;
+    const u = { ...item, ...patch };
+    if (item.layer) map.removeLayer(item.layer);
+    const newLayer = buildLeafletLayer(u._geojson, u);
+    if (newLayer && u.visible) newLayer.addTo(map);
+    return { ...u, layer: newLayer };
+  }, [buildLeafletLayer]);
+
+  const RERENDER_PROPS = new Set(["color","fillColor","fillOpacity","fillPattern","weight","pointRadius","markerType","markerColor","layerOpacity","showLabels","labelField"]);
+
+  const addLayer = useCallback((geojson, name) => {
+    const map = mapRef.current; if (!map) return;
+    const propKeys = getPropertyKeys(geojson);
+    const isPoint = isPointLayer(geojson);
+    const cfg = {
+      id: crypto.randomUUID(), name, _geojson: geojson, visible: true,
+      color: "#4e8cff", fillColor: "#4e8cff", fillOpacity: 0.35,
+      fillPattern: "solid", weight: 2,
+      pointRadius: 7, markerType: "drillhole", markerColor: "#111111",
+      layerOpacity: 1,
+      showLabels: false, labelField: propKeys[0] ?? "",
+      propKeys, isPoint,
+      legendLabel: name, includeInLegend: true,
+    };
+    const layer = buildLeafletLayer(geojson, cfg);
+    if (!layer) return;
+    layer.addTo(map);
+    try { const b = layer.getBounds(); if (b.isValid()) map.fitBounds(b, { padding:[20,20] }); } catch {}
+    setLayers(p => [...p, { ...cfg, layer }]);
+  }, [buildLeafletLayer]);
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -189,40 +280,60 @@ export default function App() {
     } catch (err) { console.error(err); alert(`Import failed: ${err.message}`); }
   };
 
-  const updateLayer = (id, patch) => {
+  const updateLayer = useCallback((id, patch) => {
+    const needsRerender = Object.keys(patch).some(k => RERENDER_PROPS.has(k));
     setLayers(p => p.map(item => {
       if (item.id !== id) return item;
-      const u = { ...item, ...patch };
-      item.layer.setStyle?.({ color:u.color, weight:+u.weight, fillColor:u.fillColor, fillOpacity:+u.fillOpacity });
-      if ("markerType" in patch || "markerColor" in patch || "pointRadius" in patch) {
-        item.layer.eachLayer?.(sub => {
-          if (sub instanceof L.Marker) sub.setIcon(makeMarkerIcon(u.markerType, u.markerColor, +u.pointRadius * 2));
-        });
-      }
-      return u;
+      if (needsRerender) return reRenderLayer(item, patch);
+      return { ...item, ...patch };
     }));
-  };
+  }, [reRenderLayer]);
 
   const toggleLayer = (id) => {
     const map = mapRef.current;
     setLayers(p => p.map(item => {
       if (item.id !== id) return item;
-      if (item.visible) map.removeLayer(item.layer); else item.layer.addTo(map);
+      if (item.visible) map.removeLayer(item.layer);
+      else item.layer?.addTo(map);
       return { ...item, visible: !item.visible };
     }));
   };
 
   const removeLayer = (id) => {
     const map = mapRef.current;
-    setLayers(p => { const t = p.find(l => l.id === id); if (t) map?.removeLayer(t.layer); return p.filter(l => l.id !== id); });
+    setLayers(p => {
+      const t = p.find(l => l.id === id);
+      if (t) map?.removeLayer(t.layer);
+      return p.filter(l => l.id !== id);
+    });
+  };
+
+  const moveLayer = (id, dir) => {
+    setLayers(p => {
+      const idx = p.findIndex(l => l.id === id);
+      if (idx < 0) return p;
+      const newIdx = idx + dir;
+      if (newIdx < 0 || newIdx >= p.length) return p;
+      const next = [...p];
+      [next[idx], next[newIdx]] = [next[newIdx], next[idx]];
+      const map = mapRef.current;
+      if (map) {
+        next.forEach(item => {
+          if (item.visible && item.layer) {
+            map.removeLayer(item.layer);
+            item.layer.addTo(map);
+          }
+        });
+      }
+      return next;
+    });
   };
 
   const fitAll = () => {
     const map = mapRef.current; if (!map) return;
-    const vis = layers.filter(l => l.visible).map(l => l.layer);
+    const vis = layers.filter(l => l.visible && l.layer).map(l => l.layer);
     if (!vis.length) return;
-    const b = L.featureGroup(vis).getBounds();
-    if (b.isValid()) map.fitBounds(b, { padding:[20,20] });
+    try { const b = L.featureGroup(vis).getBounds(); if (b.isValid()) map.fitBounds(b, { padding:[20,20] }); } catch {}
   };
 
   const switchBase = (type) => {
@@ -233,41 +344,90 @@ export default function App() {
     next.addTo(map); map._activeBase = next;
   };
 
-  const exportPDF = async () => {
-    setExportStatus("working");
-    try {
-      await Promise.all([
-        loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"),
-        loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"),
-      ]);
-      const surface = document.querySelector(".export-surface");
-      const W = surface.offsetWidth, H = surface.offsetHeight;
-      const canvas = await window.html2canvas(surface, { useCORS:true, allowTaint:true, scale:2, logging:false, backgroundColor:"#ffffff" });
-      const { jsPDF } = window.jspdf;
-      const pdf = new jsPDF({ orientation: W > H ? "landscape" : "portrait", unit:"px", format:[W, H] });
-      pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, W, H);
-      pdf.save(`${title.toLowerCase().replace(/\s+/g,"-")}-map.pdf`);
-      setExportStatus("done");
-    } catch (err) {
-      console.error(err); setExportStatus("error");
-      alert("PDF export failed. Try switching to Street basemap first (satellite tiles have CORS restrictions).");
-    } finally { setTimeout(() => setExportStatus("idle"), 2500); }
-  };
+  // Export: wait for tiles to fully load before capturing
+  const waitForTiles = () => new Promise(resolve => {
+    const map = mapRef.current;
+    if (!map) return resolve();
+    let pending = 0;
+    map.eachLayer(l => {
+      if (l._url) { // tile layer
+        const container = l.getContainer?.();
+        if (container) {
+          const imgs = container.querySelectorAll("img");
+          imgs.forEach(img => { if (!img.complete) pending++; });
+        }
+      }
+    });
+    if (pending === 0) return resolve();
+    let done = 0;
+    map.eachLayer(l => {
+      if (l._url) {
+        const container = l.getContainer?.();
+        if (container) {
+          const imgs = container.querySelectorAll("img");
+          imgs.forEach(img => {
+            if (!img.complete) {
+              img.addEventListener("load",  () => { done++; if (done >= pending) resolve(); }, { once:true });
+              img.addEventListener("error", () => { done++; if (done >= pending) resolve(); }, { once:true });
+            }
+          });
+        }
+      }
+    });
+    setTimeout(resolve, 3000); // fallback
+  });
 
-  const exportPNG = async () => {
+  const doExport = async (format) => {
     setExportStatus("working");
     try {
-      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
+      const scripts = [loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js")];
+      if (format === "pdf") scripts.push(loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"));
+      await Promise.all(scripts);
+      await waitForTiles();
+
       const surface = document.querySelector(".export-surface");
-      const canvas = await window.html2canvas(surface, { useCORS:true, allowTaint:true, scale:2, logging:false, backgroundColor:"#ffffff" });
-      const a = document.createElement("a");
-      a.download = `${title.toLowerCase().replace(/\s+/g,"-")}-map.png`;
-      a.href = canvas.toDataURL("image/png"); a.click();
+      const canvas = await window.html2canvas(surface, {
+        useCORS: true,
+        allowTaint: true,
+        scale: 2,
+        logging: false,
+        backgroundColor: "#ffffff",
+        // Force html2canvas to capture the full element including SVG overlays
+        foreignObjectRendering: false,
+        imageTimeout: 15000,
+        onclone: (doc) => {
+          // Make all leaflet panes visible in the clone
+          doc.querySelectorAll(".leaflet-pane").forEach(el => {
+            el.style.transform = "none";
+          });
+          // Ensure SVG overlay is visible
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(el => {
+            el.style.display = "block";
+            el.style.visibility = "visible";
+          });
+        },
+      });
+
+      if (format === "png") {
+        const a = document.createElement("a");
+        a.download = `${title.toLowerCase().replace(/\s+/g,"-")}-map.png`;
+        a.href = canvas.toDataURL("image/png");
+        a.click();
+      } else {
+        const W = surface.offsetWidth, H = surface.offsetHeight;
+        const { jsPDF } = window.jspdf;
+        const pdf = new jsPDF({ orientation: W > H ? "landscape" : "portrait", unit:"px", format:[W, H] });
+        pdf.addImage(canvas.toDataURL("image/png"), "PNG", 0, 0, W, H);
+        pdf.save(`${title.toLowerCase().replace(/\s+/g,"-")}-map.pdf`);
+      }
       setExportStatus("done");
     } catch (err) {
-      console.error(err); setExportStatus("error");
-      alert("PNG export failed. Try switching to Street basemap first.");
-    } finally { setTimeout(() => setExportStatus("idle"), 2500); }
+      console.error(err);
+      setExportStatus("error");
+      alert("Export failed. Switch to 🗺 Street basemap — satellite tiles block cross-origin capture.");
+    } finally {
+      setTimeout(() => setExportStatus("idle"), 3000);
+    }
   };
 
   return (
@@ -301,6 +461,7 @@ export default function App() {
             <button className="btn" onClick={() => switchBase("sat")}>🛰 Satellite</button>
             <button className="btn" onClick={() => switchBase("osm")}>🗺 Street</button>
           </div>
+          <div className="export-note" style={{ marginTop:6 }}>Switch to Street before exporting for best results</div>
         </Sec>
 
         <Sec title="Overlays">
@@ -347,11 +508,11 @@ export default function App() {
         <Sec title="Export">
           <button className="btn" onClick={fitAll} style={{ width:"100%", marginBottom:6 }}>Fit All Layers</button>
           <div className="row2">
-            <button className={`btn btn-export${exportStatus==="done"?" btn-export-done":""}`} onClick={exportPNG} disabled={exportStatus==="working"}>
-              {exportStatus==="working" ? "Working…" : "PNG"}
+            <button className={`btn btn-export${exportStatus==="done"?" btn-export-done":""}`} onClick={() => doExport("png")} disabled={exportStatus==="working"}>
+              {exportStatus==="working" ? "…" : "PNG"}
             </button>
-            <button className={`btn btn-export${exportStatus==="done"?" btn-export-done":""}`} onClick={exportPDF} disabled={exportStatus==="working"}>
-              {exportStatus==="working" ? "Working…" : "PDF"}
+            <button className={`btn btn-export${exportStatus==="done"?" btn-export-done":""}`} onClick={() => doExport("pdf")} disabled={exportStatus==="working"}>
+              {exportStatus==="working" ? "…" : "PDF"}
             </button>
           </div>
           <div className="export-note">PDF opens in Illustrator / Acrobat for editing</div>
@@ -360,11 +521,12 @@ export default function App() {
         <Sec title={`Layers${layers.length ? ` (${layers.length})` : ""}`}>
           {layers.length === 0
             ? <div className="empty-hint">No layers yet. Import a GIS file above.</div>
-            : layers.map(l => (
-                <LayerCard key={l.id} l={l}
+            : layers.map((l, idx) => (
+                <LayerCard key={l.id} l={l} idx={idx} total={layers.length}
                   onUpdate={p => updateLayer(l.id, p)}
                   onToggle={() => toggleLayer(l.id)}
                   onRemove={() => removeLayer(l.id)}
+                  onMove={dir => moveLayer(l.id, dir)}
                 />
               ))
           }
@@ -397,7 +559,10 @@ export default function App() {
           <div className="legend-block">
             {layers.filter(l => l.includeInLegend).map(l => (
               <div key={l.id} className="legend-row">
-                <span className="legend-swatch" style={{ background:l.fillColor, opacity:l.fillOpacity, border:`${Math.max(1,l.weight)}px solid ${l.color}` }} />
+                {l.isPoint
+                  ? <img src={markerSvg(l.markerType, l.markerColor, 16)} width="16" height="16" style={{ flexShrink:0 }} alt="" />
+                  : <span className="legend-swatch" style={{ background:l.fillColor, opacity:l.fillOpacity, border:`${Math.max(1,l.weight)}px solid ${l.color}` }} />
+                }
                 <span>{l.legendLabel}</span>
               </div>
             ))}
@@ -428,21 +593,33 @@ function Toggle({ label, checked, onChange }) {
     </label>
   );
 }
-function LayerCard({ l, onUpdate, onToggle, onRemove }) {
+
+function LayerCard({ l, idx, total, onUpdate, onToggle, onRemove, onMove }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="layer-card">
       <div className="layer-card-header">
+        <div className="layer-order-btns">
+          <button className="btn-order" onClick={() => onMove(-1)} disabled={idx === 0}>▲</button>
+          <button className="btn-order" onClick={() => onMove(1)}  disabled={idx === total-1}>▼</button>
+        </div>
         <button className="btn-chevron" onClick={() => setOpen(o => !o)}>{open ? "▾" : "▸"}</button>
         <span className="layer-card-name" title={l.name}>{l.name}</span>
         <button className="btn-icon-sm" onClick={onToggle}>{l.visible ? "👁" : "🚫"}</button>
         <button className="btn-icon-sm" onClick={onRemove}>✕</button>
       </div>
+
       {open && (
         <div className="layer-card-body">
           <Field label="Legend label">
             <input value={l.legendLabel} onChange={e => onUpdate({ legendLabel:e.target.value })} />
           </Field>
+
+          <Field label={`Layer opacity — ${Math.round(+l.layerOpacity * 100)}%`}>
+            <input type="range" min="0" max="1" step="0.05" value={l.layerOpacity}
+              onChange={e => onUpdate({ layerOpacity:e.target.value })} />
+          </Field>
+
           <div className="color-trio">
             <div>
               <div className="field-label">Stroke</div>
@@ -452,25 +629,56 @@ function LayerCard({ l, onUpdate, onToggle, onRemove }) {
               <div className="field-label">Fill</div>
               <input type="color" value={l.fillColor} onChange={e => onUpdate({ fillColor:e.target.value })} />
             </div>
-            <div>
-              <div className="field-label">Marker</div>
-              <input type="color" value={l.markerColor} onChange={e => onUpdate({ markerColor:e.target.value })} />
-            </div>
+            {l.isPoint && (
+              <div>
+                <div className="field-label">Marker</div>
+                <input type="color" value={l.markerColor} onChange={e => onUpdate({ markerColor:e.target.value })} />
+              </div>
+            )}
           </div>
-          <Field label="Marker type">
-            <select value={l.markerType} onChange={e => onUpdate({ markerType:e.target.value })}>
-              {MARKER_TYPES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+
+          <Field label="Fill pattern">
+            <select value={l.fillPattern} onChange={e => onUpdate({ fillPattern:e.target.value })}>
+              {FILL_PATTERNS.map(p => <option key={p.value} value={p.value}>{p.label}</option>)}
             </select>
           </Field>
+
           <Field label={`Fill opacity — ${Math.round(+l.fillOpacity * 100)}%`}>
-            <input type="range" min="0" max="1" step="0.05" value={l.fillOpacity} onChange={e => onUpdate({ fillOpacity:e.target.value })} />
+            <input type="range" min="0" max="1" step="0.05" value={l.fillOpacity}
+              onChange={e => onUpdate({ fillOpacity:e.target.value })} />
           </Field>
+
           <Field label={`Line weight — ${l.weight}px`}>
-            <input type="range" min="1" max="10" step="1" value={l.weight} onChange={e => onUpdate({ weight:e.target.value })} />
+            <input type="range" min="1" max="10" step="1" value={l.weight}
+              onChange={e => onUpdate({ weight:e.target.value })} />
           </Field>
-          <Field label={`Marker size — ${+l.pointRadius * 2}px`}>
-            <input type="range" min="3" max="20" step="1" value={l.pointRadius} onChange={e => onUpdate({ pointRadius:e.target.value })} />
-          </Field>
+
+          {l.isPoint && (
+            <>
+              <Field label="Marker type">
+                <select value={l.markerType} onChange={e => onUpdate({ markerType:e.target.value })}>
+                  {MARKER_TYPES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </select>
+              </Field>
+
+              <Field label={`Marker size — ${+l.pointRadius * 2}px`}>
+                <input type="range" min="3" max="20" step="1" value={l.pointRadius}
+                  onChange={e => onUpdate({ pointRadius:e.target.value })} />
+              </Field>
+
+              <div className="label-section">
+                <Toggle label="Show feature labels" checked={l.showLabels} onChange={v => onUpdate({ showLabels:v })} />
+                {l.showLabels && l.propKeys.length > 0 && (
+                  <Field label="Label field">
+                    <select value={l.labelField} onChange={e => onUpdate({ labelField:e.target.value })}>
+                      {l.propKeys.map(k => <option key={k} value={k}>{k}</option>)}
+                    </select>
+                  </Field>
+                )}
+              </div>
+            </>
+          )}
+
           <Toggle label="Include in legend" checked={l.includeInLegend} onChange={v => onUpdate({ includeInLegend:v })} />
         </div>
       )}
