@@ -94,7 +94,7 @@ export default function App() {
     try {
       const geojson = await loadGeoJSON(file);
       const id = crypto.randomUUID();
-      const baseName = file.name.replace(/\.(geojson|json)$/i, "") || "Layer";
+      const baseName = file.name.replace(/\.(zip|geojson|json)$/i, "") || "Layer";
       const kind = detectLayerKind(geojson);
       const presetKey = kind === "points" ? "drillhole" : "claim";
 
@@ -200,14 +200,14 @@ export default function App() {
         </div>
 
         <div className="sidebar-section">
-          <label className="field-label">Import GeoJSON</label>
+          <label className="field-label">Import GIS</label>
           <button className="btn" onClick={() => fileInputRef.current?.click()}>
-            Upload .geojson / .json
+            Upload .zip / .geojson / .json
           </button>
           <input
             ref={fileInputRef}
             type="file"
-            accept=".geojson,.json,application/json"
+            accept=".zip,.geojson,.json,application/json"
             style={{ display: "none" }}
             onChange={handleFileChange}
           />
@@ -408,12 +408,14 @@ export default function App() {
                   <span
                     className="legend-swatch"
                     style={{
-                      background: item.type === "points"
-                        ? item.style?.markerColor || "#111111"
-                        : item.style?.fill || "#54a6ff",
-                      borderColor: item.type === "points"
-                        ? item.style?.markerColor || "#111111"
-                        : item.style?.stroke || "#54a6ff",
+                      background:
+                        item.type === "points"
+                          ? item.style?.markerColor || "#111111"
+                          : item.style?.fill || "#54a6ff",
+                      borderColor:
+                        item.type === "points"
+                          ? item.style?.markerColor || "#111111"
+                          : item.style?.stroke || "#54a6ff",
                       borderRadius: item.type === "points" ? "999px" : "2px",
                     }}
                   />
