@@ -4,32 +4,65 @@ import shp from "shpjs";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MARKER_TYPES = [
-  { value: "circle",    label: "Circle" },
-  { value: "drillhole", label: "Drillhole ▼" },
-  { value: "diamond",   label: "Diamond" },
-  { value: "square",    label: "Square" },
-  { value: "triangle",  label: "Triangle ▲" },
+  { value:"circle",    label:"Circle" },
+  { value:"drillhole", label:"Drillhole ▼" },
+  { value:"diamond",   label:"Diamond" },
+  { value:"square",    label:"Square" },
+  { value:"triangle",  label:"Triangle ▲" },
 ];
 
 const FILL_PATTERNS = [
-  { value: "solid",      label: "Solid" },
-  { value: "hatch",      label: "Hatch ////" },
-  { value: "crosshatch", label: "Crosshatch ####" },
-  { value: "dots",       label: "Dots ···" },
-  { value: "none",       label: "No fill" },
+  { value:"solid",      label:"Solid" },
+  { value:"hatch",      label:"Hatch ////" },
+  { value:"crosshatch", label:"Crosshatch" },
+  { value:"dots",       label:"Dots" },
+  { value:"none",       label:"No fill" },
 ];
 
-const DRAW_MODES = ["none","circle","rectangle","polygon","line"];
+// ─── Drag helper — stops event from reaching Leaflet ─────────────────────────
+function useDrag(pos, setPos) {
+  const onMouseDown = useCallback((e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    const startX = e.clientX - pos.x;
+    const startY = e.clientY - pos.y;
+    const onMove = (ev) => setPos({ x: ev.clientX - startX, y: ev.clientY - startY });
+    const onUp   = () => { window.removeEventListener("mousemove", onMove); window.removeEventListener("mouseup", onUp); };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  }, [pos, setPos]);
+  return onMouseDown;
+}
+
+// ─── SVG pattern injection into Leaflet overlay pane ─────────────────────────
+function injectPatterns(map, color) {
+  const overlayPane = map.getPanes().overlayPane;
+  let svg = overlayPane?.querySelector("svg");
+  if (!svg) return;
+  let defs = svg.querySelector("defs");
+  if (!defs) { defs = document.createElementNS("http://www.w3.org/2000/svg","defs"); svg.prepend(defs); }
+
+  const patternDefs = [
+    { id:"mvp-hatch",      html:`<pattern id="mvp-hatch" patternUnits="userSpaceOnUse" width="8" height="8" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="8" stroke="${color}" stroke-width="2.5"/></pattern>` },
+    { id:"mvp-crosshatch", html:`<pattern id="mvp-crosshatch" patternUnits="userSpaceOnUse" width="8" height="8"><line x1="0" y1="0" x2="0" y2="8" stroke="${color}" stroke-width="1.5"/><line x1="0" y1="0" x2="8" y2="0" stroke="${color}" stroke-width="1.5"/></pattern>` },
+    { id:"mvp-dots",       html:`<pattern id="mvp-dots" patternUnits="userSpaceOnUse" width="8" height="8"><circle cx="4" cy="4" r="2" fill="${color}"/></pattern>` },
+  ];
+  patternDefs.forEach(({ id, html }) => {
+    const existing = defs.querySelector(`#${id}`);
+    if (existing) existing.remove();
+    defs.insertAdjacentHTML("beforeend", html);
+  });
+}
 
 // ─── Marker icon factory ──────────────────────────────────────────────────────
 function makeMarkerIcon(type, color, size = 14) {
   const s = size, h = s / 2;
   let inner = "";
-  if (type === "circle")         inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
-  else if (type === "drillhole") inner = `<polygon points="${h},${s-1} 1,1 ${s-1},1" fill="${color}" stroke="#fff" stroke-width="1"/><line x1="${h}" y1="0" x2="${h}" y2="${s}" stroke="${color}" stroke-width="2"/>`;
-  else if (type === "diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
-  else if (type === "square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
-  else if (type === "triangle")  inner = `<polygon points="${h},1 ${s-1},${s-1} 1,${s-1}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+  if      (type==="circle")    inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
+  else if (type==="drillhole") inner = `<polygon points="${h},${s-1} 1,1 ${s-1},1" fill="${color}" stroke="#fff" stroke-width="1"/><line x1="${h}" y1="0" x2="${h}" y2="${s}" stroke="${color}" stroke-width="2"/>`;
+  else if (type==="diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
+  else if (type==="square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#fff" stroke-width="1.5"/>`;
+  else if (type==="triangle")  inner = `<polygon points="${h},1 ${s-1},${s-1} 1,${s-1}" fill="${color}" stroke="#fff" stroke-width="1"/>`;
   return L.icon({
     iconUrl: `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}">${inner}</svg>`)}`,
     iconSize:[s,s], iconAnchor:[h,h], popupAnchor:[0,-h-2],
@@ -39,11 +72,11 @@ function makeMarkerIcon(type, color, size = 14) {
 function markerSvgUrl(type, color, size = 16) {
   const s = size, h = s / 2;
   let inner = "";
-  if (type === "circle")         inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#444" stroke-width="1"/>`;
-  else if (type === "drillhole") inner = `<polygon points="${h},${s-2} 2,2 ${s-2},2" fill="${color}" stroke="#444" stroke-width="1"/><line x1="${h}" y1="0" x2="${h}" y2="${s}" stroke="${color}" stroke-width="1.5"/>`;
-  else if (type === "diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#444" stroke-width="1"/>`;
-  else if (type === "square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#444" stroke-width="1"/>`;
-  else if (type === "triangle")  inner = `<polygon points="${h},1 ${s-1},${s-1} 1,${s-1}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  if      (type==="circle")    inner = `<circle cx="${h}" cy="${h}" r="${h-1.5}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  else if (type==="drillhole") inner = `<polygon points="${h},${s-2} 2,2 ${s-2},2" fill="${color}" stroke="#444" stroke-width="1"/><line x1="${h}" y1="0" x2="${h}" y2="${s}" stroke="${color}" stroke-width="1.5"/>`;
+  else if (type==="diamond")   inner = `<polygon points="${h},1 ${s-1},${h} ${h},${s-1} 1,${h}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  else if (type==="square")    inner = `<rect x="2" y="2" width="${s-4}" height="${s-4}" fill="${color}" stroke="#444" stroke-width="1"/>`;
+  else if (type==="triangle")  inner = `<polygon points="${h},1 ${s-1},${s-1} 1,${s-1}" fill="${color}" stroke="#444" stroke-width="1"/>`;
   return `data:image/svg+xml;base64,${btoa(`<svg xmlns="http://www.w3.org/2000/svg" width="${s}" height="${s}">${inner}</svg>`)}`;
 }
 
@@ -64,8 +97,7 @@ function csvToGeoJSON(text) {
   const lngIdx = headers.findIndex(h => /^lo?n(gitude|g)?$/i.test(h));
   if (latIdx < 0 || lngIdx < 0) throw new Error("CSV must have lat and lon/lng columns.");
   const features = lines.slice(1).filter(Boolean).map(line => {
-    const parts = line.split(",");
-    const props = {};
+    const parts = line.split(","); const props = {};
     headers.forEach((h,i) => { props[h] = parts[i]?.trim(); });
     return { type:"Feature", geometry:{ type:"Point", coordinates:[+parts[lngIdx],+parts[latIdx]] }, properties:props };
   });
@@ -73,15 +105,15 @@ function csvToGeoJSON(text) {
 }
 
 function isPointLayer(geojson) {
-  const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g => g.features??[]) : []);
+  const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g=>g.features??[]) : []);
   if (!features.length) return false;
-  return features.filter(f => f.geometry?.type==="Point"||f.geometry?.type==="MultiPoint").length / features.length > 0.5;
+  return features.filter(f=>f.geometry?.type==="Point"||f.geometry?.type==="MultiPoint").length / features.length > 0.5;
 }
 
 function getPropertyKeys(geojson) {
-  const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g => g.features??[]) : []);
+  const features = geojson.features ?? (Array.isArray(geojson) ? geojson.flatMap(g=>g.features??[]) : []);
   const keys = new Set();
-  features.slice(0,20).forEach(f => Object.keys(f.properties??{}).forEach(k => keys.add(k)));
+  features.slice(0,20).forEach(f => Object.keys(f.properties??{}).forEach(k=>keys.add(k)));
   return [...keys];
 }
 
@@ -94,62 +126,101 @@ async function loadScript(src) {
   });
 }
 
-// ─── Main App ─────────────────────────────────────────────────────────────────
+// ─── Draggable overlay wrapper ────────────────────────────────────────────────
+function DraggableOverlay({ x, y, onPosChange, children, className="", style={} }) {
+  const startRef = useRef(null);
+
+  const onMouseDown = (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    e.preventDefault();
+    startRef.current = { mx: e.clientX, my: e.clientY, ox: x, oy: y };
+
+    const onMove = (ev) => {
+      const dx = ev.clientX - startRef.current.mx;
+      const dy = ev.clientY - startRef.current.my;
+      onPosChange({ x: startRef.current.ox + dx, y: startRef.current.oy + dy });
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  return (
+    <div
+      className={`draggable-overlay ${className}`}
+      style={{ position:"absolute", left:x, top:y, cursor:"move", zIndex:1001, userSelect:"none", ...style }}
+      onMouseDown={onMouseDown}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ─── App ──────────────────────────────────────────────────────────────────────
 export default function App() {
-  const mapRef        = useRef(null);
-  const containerRef  = useRef(null);
-  const drawStateRef  = useRef({ mode:"none", points:[], layer:null });
+  const mapRef       = useRef(null);
+  const containerRef = useRef(null);
+  const drawRef      = useRef({ mode:"none", points:[], preview:null });
 
-  const [layers,        setLayers]        = useState([]);
-  const [title,         setTitle]         = useState("RIFT PROJECT");
-  const [subtitle,      setSubtitle]      = useState("Nebraska");
-  const [logo,          setLogo]          = useState(null);
-  const [northArrow,    setNorthArrow]    = useState(true);
-  const [showLegend,    setShowLegend]    = useState(true);
+  // Map labels & branding
+  const [title,        setTitle]        = useState("RIFT PROJECT");
+  const [subtitle,     setSubtitle]     = useState("Nebraska");
+  const [titlePos,     setTitlePos]     = useState({ x:null, y:18 }); // null = right-anchored default
+  const [logo,         setLogo]         = useState(null);
+  const [logoPos,      setLogoPos]      = useState({ x:18, y:18 });
 
-  // Inset — upload only
-  const [showInset,     setShowInset]     = useState(true);
-  const [insetImage,    setInsetImage]    = useState(null);
+  // Overlays
+  const [northArrow,   setNorthArrow]   = useState(true);
+  const [showLegend,   setShowLegend]   = useState(true);
+  const [legendPos,    setLegendPos]    = useState({ x:16, y:null }); // null = bottom-anchored default
+  const [showInset,    setShowInset]    = useState(true);
+  const [insetImage,   setInsetImage]   = useState(null);
+  const [insetPos,     setInsetPos]     = useState({ x:null, y:80 });
 
-  // Annotations (plain boxes)
-  const [annotations,   setAnnotations]   = useState([]);
-  const [annotText,     setAnnotText]     = useState("");
-  const [annotColor,    setAnnotColor]    = useState("#0a2c78");
-  const [placingAnnot,  setPlacingAnnot]  = useState(false);
+  // GIS layers
+  const [layers,       setLayers]       = useState([]);
 
-  // Callout boxes (with leader lines)
-  const [callouts,      setCallouts]      = useState([]);
-  const [calloutText,   setCalloutText]   = useState("");
-  const [calloutColor,  setCalloutColor]  = useState("#ffffff");
-  const [calloutBorder, setCalloutBorder] = useState("#1a3a6b");
-  const [placingCallout,setPlacingCallout]= useState(false);
+  // Image overlays
+  const [imageOverlays, setImageOverlays] = useState([]);
+  const [pendingOverlay, setPendingOverlay] = useState(null); // { src, step:"p1"|"p2", p1:latlng }
+
+  // Annotations
+  const [annotations,  setAnnotations]  = useState([]); // { id, text, color, x, y }
+  const [annotDraft,   setAnnotDraft]   = useState({ text:"", color:"#0a2c78" });
+
+  // Callouts
+  const [callouts,     setCallouts]     = useState([]); // { id, text, bgColor, borderColor, pinX, pinY, boxX, boxY }
+  const [calloutDraft, setCalloutDraft] = useState({ text:"", bgColor:"#ffffff", borderColor:"#1a3a6b" });
 
   // Curved text
-  const [curvedLabels,  setCurvedLabels]  = useState([]);
-  const [curvedText,    setCurvedText]    = useState("");
-  const [curvedColor,   setCurvedColor]   = useState("#111111");
-  const [curvedSize,    setCurvedSize]    = useState(18);
-  const [placingCurved, setPlacingCurved] = useState(false); // "p1"|"p2"|false
-  const curvedTempRef = useRef(null);
+  const [curvedLabels, setCurvedLabels] = useState([]); // { id, text, color, size, p1:latlng, p2:latlng }
+  const [curvedDraft,  setCurvedDraft]  = useState({ text:"", color:"#111111", size:20 });
+  const [curvedStep,   setCurvedStep]   = useState(null); // null|"p1"|"p2"
+  const curvedP1Ref = useRef(null);
 
-  // Draw tools
-  const [drawMode,      setDrawMode]      = useState("none");
-  const [drawColor,     setDrawColor]     = useState("#e63946");
-  const [drawFill,      setDrawFill]      = useState("#e63946");
-  const [drawOpacity,   setDrawOpacity]   = useState(0.25);
+  // Draw
+  const [drawMode,     setDrawMode]     = useState("none");
+  const [drawStyle,    setDrawStyle]    = useState({ color:"#e63946", fill:"#e63946", opacity:0.25, weight:2 });
+  const [drawActive,   setDrawActive]   = useState(false); // currently drawing
 
-  // Image overlay
-  const [imageOverlays, setImageOverlays] = useState([]);
-  const [overlayImage,  setOverlayImage]  = useState(null);
-  const [placingOverlay,setPlacingOverlay]= useState(false); // "p1"|"p2"|false
-  const overlayTempRef  = useRef({ p1:null });
+  // Legend editor
+  const [legendItems,  setLegendItems]  = useState([]); // { id, text, type:"swatch"|"marker"|"line", color, markerType }
+  const [legendDraft,  setLegendDraft]  = useState({ text:"", type:"swatch", color:"#4e8cff", markerType:"circle" });
 
-  const [exportStatus,  setExportStatus]  = useState("idle");
+  // Export
+  const [exporting,    setExporting]    = useState(false);
+
+  // Map mode indicator
+  const [mapCursor, setMapCursor] = useState("grab");
 
   // ── Map init ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
-    const map = L.map(containerRef.current).setView([40,-96],5);
+    const map = L.map(containerRef.current, { doubleClickZoom: false }).setView([40,-96],5);
     const osm = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",{attribution:"© OSM",maxZoom:19});
     const sat = L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",{attribution:"Esri",maxZoom:19});
     sat.addTo(map);
@@ -160,194 +231,209 @@ export default function App() {
     return ()=>{ if(mapRef.current){mapRef.current.remove();mapRef.current=null;} };
   },[]);
 
-  // ── Unified map click handler ─────────────────────────────────────────────
+  // ── Unified map click ─────────────────────────────────────────────────────
+  const anyPlacing = drawMode!=="none"||curvedStep||pendingOverlay||
+    (annotDraft._placing)||( calloutDraft._placing);
+
   useEffect(()=>{
-    const map = mapRef.current; if(!map) return;
-    const el = map.getContainer();
+    const map=mapRef.current; if(!map) return;
 
-    const onClick = (e) => {
-      const latlng = e.latlng;
-      const rect   = containerRef.current.getBoundingClientRect();
-      const px     = { x: e.originalEvent.clientX - rect.left, y: e.originalEvent.clientY - rect.top };
+    const onClick=(e)=>{
+      const latlng=e.latlng;
+      const rect=containerRef.current.getBoundingClientRect();
+      const px={ x:e.originalEvent.clientX-rect.left, y:e.originalEvent.clientY-rect.top };
 
-      // ── Plain annotation ──
-      if (placingAnnot) {
-        setAnnotations(p=>[...p,{ id:crypto.randomUUID(), text:annotText.trim()||"Label", color:annotColor, x:px.x, y:px.y }]);
-        setAnnotText(""); setPlacingAnnot(false); el.style.cursor=""; return;
+      // Annotation placement
+      if(annotDraft._placing){
+        setAnnotations(p=>[...p,{ id:crypto.randomUUID(), text:annotDraft.text||"Label", color:annotDraft.color, x:px.x, y:px.y }]);
+        setAnnotDraft(d=>({...d,_placing:false})); return;
       }
 
-      // ── Callout (leader line) ──
-      if (placingCallout) {
+      // Callout placement
+      if(calloutDraft._placing){
         setCallouts(p=>[...p,{
-          id:crypto.randomUUID(), text:calloutText.trim()||"Label",
-          color:calloutColor, border:calloutBorder,
-          pinX:px.x, pinY:px.y,
-          boxX:px.x+20, boxY:px.y-60,
+          id:crypto.randomUUID(), text:calloutDraft.text||"Label",
+          bgColor:calloutDraft.bgColor, borderColor:calloutDraft.borderColor,
+          pinX:px.x, pinY:px.y, boxX:px.x+24, boxY:px.y-64,
         }]);
-        setCalloutText(""); setPlacingCallout(false); el.style.cursor=""; return;
+        setCalloutDraft(d=>({...d,_placing:false})); return;
       }
 
-      // ── Curved text — pick p1 then p2 ──
-      if (placingCurved === "p1") {
-        curvedTempRef.current = { p1:latlng };
-        setPlacingCurved("p2"); return;
-      }
-      if (placingCurved === "p2") {
-        const p1 = curvedTempRef.current.p1;
-        setCurvedLabels(prev=>[...prev,{
-          id:crypto.randomUUID(), text:curvedText, color:curvedColor, size:curvedSize,
-          p1, p2:latlng,
+      // Curved text
+      if(curvedStep==="p1"){ curvedP1Ref.current=latlng; setCurvedStep("p2"); return; }
+      if(curvedStep==="p2"){
+        setCurvedLabels(p=>[...p,{
+          id:crypto.randomUUID(), text:curvedDraft.text, color:curvedDraft.color,
+          size:curvedDraft.size, p1:curvedP1Ref.current, p2:latlng,
         }]);
-        setPlacingCurved(false); el.style.cursor=""; curvedTempRef.current=null; return;
+        setCurvedStep(null); return;
       }
 
-      // ── Image overlay — pick NW then SE corners ──
-      if (placingOverlay === "p1") {
-        overlayTempRef.current.p1 = latlng;
-        setPlacingOverlay("p2"); return;
-      }
-      if (placingOverlay === "p2") {
-        const p1 = overlayTempRef.current.p1;
-        const bounds = L.latLngBounds(p1, latlng);
-        const id = crypto.randomUUID();
-        const leafLayer = L.imageOverlay(overlayImage, bounds, { opacity:0.8, interactive:false });
-        leafLayer.addTo(map);
-        setImageOverlays(prev=>[...prev,{ id, src:overlayImage, bounds, opacity:0.8, leafLayer, visible:true, name:"Image overlay" }]);
-        setOverlayImage(null); setPlacingOverlay(false); el.style.cursor=""; return;
+      // Image overlay corners
+      if(pendingOverlay?.step==="p1"){ setPendingOverlay(o=>({...o,p1:latlng,step:"p2"})); return; }
+      if(pendingOverlay?.step==="p2"){
+        const bounds=L.latLngBounds(pendingOverlay.p1,latlng);
+        const id=crypto.randomUUID();
+        const ll=L.imageOverlay(pendingOverlay.src,bounds,{opacity:0.8,interactive:false});
+        ll.addTo(map);
+        setImageOverlays(p=>[...p,{id,name:"Image overlay",src:pendingOverlay.src,bounds,opacity:0.8,leafLayer:ll,visible:true}]);
+        setPendingOverlay(null); return;
       }
 
-      // ── Draw tools ──
-      if (drawMode === "none") return;
-      const ds = drawStateRef.current;
+      // Draw
+      const ds=drawRef.current;
+      if(drawMode==="none") return;
 
-      if (drawMode === "circle") {
-        if (ds.points.length === 0) {
-          ds.points = [latlng];
-          ds.center = latlng;
-        } else {
-          const radius = ds.center.distanceTo(latlng);
-          if (ds.layer) map.removeLayer(ds.layer);
-          const drawn = L.circle(ds.center, {
-            radius, color:drawColor, weight:2,
-            fill:true, fillColor:drawFill, fillOpacity:drawOpacity,
-          }).addTo(map);
-          addDrawnLayer(drawn, "circle", null);
-          ds.points=[]; ds.layer=null;
+      if(drawMode==="circle"){
+        if(!ds.points.length){ ds.points=[latlng]; }
+        else{
+          const r=ds.center.distanceTo(latlng);
+          if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
+          const layer=L.circle(ds.center,{radius:r,color:drawStyle.color,weight:drawStyle.weight,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity}).addTo(map);
+          commitDrawnLayer(layer,"Circle"); ds.points=[]; ds.center=null;
         }
         return;
       }
-
-      if (drawMode === "rectangle") {
-        if (ds.points.length === 0) {
-          ds.points = [latlng];
-        } else {
-          const drawn = L.rectangle(L.latLngBounds(ds.points[0], latlng),{
-            color:drawColor, weight:2, fill:true, fillColor:drawFill, fillOpacity:drawOpacity,
-          }).addTo(map);
-          addDrawnLayer(drawn,"rectangle",null);
-          ds.points=[];
+      if(drawMode==="rectangle"){
+        if(!ds.points.length){ ds.points=[latlng]; }
+        else{
+          if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
+          const layer=L.rectangle(L.latLngBounds(ds.points[0],latlng),{color:drawStyle.color,weight:drawStyle.weight,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity}).addTo(map);
+          commitDrawnLayer(layer,"Rectangle"); ds.points=[];
         }
         return;
       }
-
-      if (drawMode === "polygon" || drawMode === "line") {
+      if(drawMode==="polygon"||drawMode==="line"){
         ds.points.push(latlng);
-        if (ds.layer) map.removeLayer(ds.layer);
-        if (drawMode==="polygon" && ds.points.length>2) {
-          ds.layer = L.polygon(ds.points,{ color:drawColor, weight:2, fill:true, fillColor:drawFill, fillOpacity:drawOpacity, dashArray:"" }).addTo(map);
-        } else if (drawMode==="line") {
-          ds.layer = L.polyline(ds.points,{ color:drawColor, weight:2 }).addTo(map);
-        }
+        if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
+        if(drawMode==="polygon"&&ds.points.length>1)
+          ds.preview=L.polygon(ds.points,{color:drawStyle.color,weight:drawStyle.weight,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity,dashArray:"6,4"}).addTo(map);
+        else if(drawMode==="line"&&ds.points.length>1)
+          ds.preview=L.polyline(ds.points,{color:drawStyle.color,weight:drawStyle.weight,dashArray:"6,4"}).addTo(map);
+        setDrawActive(true);
         return;
       }
     };
 
-    const onDblClick = (e) => {
-      const ds = drawStateRef.current;
-      if ((drawMode==="polygon"||drawMode==="line") && ds.points.length>=2) {
+    const onMouseMove=(e)=>{
+      const ds=drawRef.current;
+      if(drawMode==="circle"&&ds.points.length===1){
+        ds.center=ds.points[0];
+        const r=ds.center.distanceTo(e.latlng);
+        if(ds.preview) map.removeLayer(ds.preview);
+        ds.preview=L.circle(ds.center,{radius:r,color:drawStyle.color,weight:1,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity*0.5,dashArray:"4,4"}).addTo(map);
+      }
+    };
+
+    const onDblClick=(e)=>{
+      const ds=drawRef.current;
+      if((drawMode==="polygon"||drawMode==="line")&&ds.points.length>=2){
         L.DomEvent.stopPropagation(e);
-        if (ds.layer) map.removeLayer(ds.layer);
-        const drawn = drawMode==="polygon"
-          ? L.polygon(ds.points,{ color:drawColor, weight:2, fill:true, fillColor:drawFill, fillOpacity:drawOpacity })
-          : L.polyline(ds.points,{ color:drawColor, weight:2 });
-        drawn.addTo(map);
-        addDrawnLayer(drawn,drawMode,null);
-        ds.points=[]; ds.layer=null;
+        if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
+        const layer=drawMode==="polygon"
+          ?L.polygon(ds.points,{color:drawStyle.color,weight:drawStyle.weight,fill:true,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity})
+          :L.polyline(ds.points,{color:drawStyle.color,weight:drawStyle.weight});
+        layer.addTo(map);
+        commitDrawnLayer(layer,drawMode==="polygon"?"Polygon":"Line");
+        ds.points=[]; setDrawActive(false);
+      }
+    };
+
+    // ESC to cancel draw
+    const onKey=(e)=>{
+      if(e.key==="Escape"){
+        const ds=drawRef.current;
+        if(ds.preview){map.removeLayer(ds.preview);ds.preview=null;}
+        ds.points=[];
+        setDrawMode("none"); setDrawActive(false);
+        setCurvedStep(null); setPendingOverlay(null);
+        setAnnotDraft(d=>({...d,_placing:false}));
+        setCalloutDraft(d=>({...d,_placing:false}));
       }
     };
 
     map.on("click",onClick);
+    map.on("mousemove",onMouseMove);
     map.on("dblclick",onDblClick);
+    window.addEventListener("keydown",onKey);
 
-    // Cursor
-    const anyPlacing = placingAnnot||placingCallout||placingCurved||placingOverlay||drawMode!=="none";
-    el.style.cursor = anyPlacing ? "crosshair" : "";
+    const isPlacing=drawMode!=="none"||curvedStep||pendingOverlay||annotDraft._placing||calloutDraft._placing;
+    map.getContainer().style.cursor=isPlacing?"crosshair":"";
 
-    return ()=>{ map.off("click",onClick); map.off("dblclick",onDblClick); el.style.cursor=""; };
-  },[placingAnnot,annotText,annotColor,
-     placingCallout,calloutText,calloutColor,calloutBorder,
-     placingCurved,curvedText,curvedColor,curvedSize,
-     placingOverlay,overlayImage,
-     drawMode,drawColor,drawFill,drawOpacity]);
+    return ()=>{
+      map.off("click",onClick);
+      map.off("mousemove",onMouseMove);
+      map.off("dblclick",onDblClick);
+      window.removeEventListener("keydown",onKey);
+    };
+  },[drawMode,drawStyle,curvedStep,pendingOverlay,annotDraft,calloutDraft]);
 
-  // ── Drawn shape → layer state ─────────────────────────────────────────────
-  const addDrawnLayer = useCallback((leafLayer, type, geojson) => {
-    const id = crypto.randomUUID();
+  // ── Commit drawn shape to layer list ─────────────────────────────────────
+  const commitDrawnLayer=useCallback((leafLayer,type)=>{
     setLayers(p=>[...p,{
-      id, name:`Drawn ${type}`, layer:leafLayer, _geojson:geojson,
+      id:crypto.randomUUID(), name:type, layer:leafLayer, _geojson:null,
       visible:true, isPoint:false, isDrawn:true,
-      color:drawColor, fillColor:drawFill, fillOpacity:drawOpacity,
-      fillPattern:"solid", weight:2, layerOpacity:1,
-      legendLabel:`Drawn ${type}`, includeInLegend:true,
+      color:drawStyle.color, fillColor:drawStyle.fill, fillOpacity:drawStyle.opacity,
+      fillPattern:"solid", weight:drawStyle.weight, layerOpacity:1,
+      legendLabel:type, includeInLegend:false,
       propKeys:[], showLabels:false, labelField:"",
     }]);
-  },[drawColor,drawFill,drawOpacity]);
+  },[drawStyle]);
 
   // ── GeoJSON layer builder ─────────────────────────────────────────────────
-  const buildLeafletLayer = useCallback((geojson, cfg) => {
-    const map = mapRef.current; if(!map) return null;
-    let fillStyle = {};
-    if (cfg.fillPattern==="none")  fillStyle={ fill:false, fillOpacity:0 };
-    else if (cfg.fillPattern==="solid") fillStyle={ fill:true, fillColor:cfg.fillColor, fillOpacity:+cfg.fillOpacity };
-    else fillStyle={ fill:true, fillColor:cfg.fillColor, fillOpacity:+cfg.fillOpacity*0.4 };
+  const buildLeafletLayer=useCallback((geojson,cfg)=>{
+    const map=mapRef.current; if(!map||!geojson) return null;
+
+    // Inject SVG patterns
+    injectPatterns(map,cfg.fillColor);
+
+    let fillStyle={};
+    if(cfg.fillPattern==="none")  fillStyle={fill:false,fillOpacity:0};
+    else if(cfg.fillPattern==="solid") fillStyle={fill:true,fillColor:cfg.fillColor,fillOpacity:+cfg.fillOpacity};
+    else {
+      // Use SVG pattern URL
+      const patId=`mvp-${cfg.fillPattern}`;
+      fillStyle={fill:true,fillColor:`url(#${patId})`,fillOpacity:1,className:`mvpat-${cfg.fillPattern}`};
+    }
 
     return L.geoJSON(geojson,{
-      style:()=>({ color:cfg.color, weight:+cfg.weight, opacity:+cfg.layerOpacity, ...fillStyle }),
-      pointToLayer:(_,latlng)=>L.marker(latlng,{ icon:makeMarkerIcon(cfg.markerType,cfg.markerColor,+cfg.pointRadius*2), opacity:+cfg.layerOpacity }),
+      style:()=>({color:cfg.color,weight:+cfg.weight,opacity:+cfg.layerOpacity,...fillStyle}),
+      pointToLayer:(_,latlng)=>L.marker(latlng,{icon:makeMarkerIcon(cfg.markerType,cfg.markerColor,+cfg.pointRadius*2),opacity:+cfg.layerOpacity}),
       onEachFeature:(feature,l)=>{
         const p=feature.properties||{};
-        l.bindPopup(Object.keys(p).length
-          ? `<pre style="margin:0;font-size:11px;max-width:260px;overflow:auto">${escapeHtml(JSON.stringify(p,null,2))}</pre>`
-          : "No attributes");
-        if(cfg.showLabels&&cfg.labelField&&p[cfg.labelField]!=null){
-          l.bindTooltip(String(p[cfg.labelField]),{ permanent:true, direction:"right", className:"mv-label", offset:[10,0] });
-        }
+        l.bindPopup(Object.keys(p).length?`<pre style="margin:0;font-size:11px;max-width:260px;overflow:auto">${escapeHtml(JSON.stringify(p,null,2))}</pre>`:"No attributes");
+        if(cfg.showLabels&&cfg.labelField&&p[cfg.labelField]!=null)
+          l.bindTooltip(String(p[cfg.labelField]),{permanent:true,direction:"right",className:"mv-label",offset:[10,0]});
       },
     });
   },[]);
 
-  const reRenderLayer = useCallback((item,patch)=>{
+  const reRenderLayer=useCallback((item,patch)=>{
     const map=mapRef.current; if(!map) return item;
     const u={...item,...patch};
     if(item.layer) map.removeLayer(item.layer);
-    if(u.isDrawn) return u; // drawn shapes re-style in place
+    if(u.isDrawn){
+      // Re-style drawn layers
+      if(item.layer) item.layer.addTo(map);
+      return u;
+    }
     const newLayer=buildLeafletLayer(u._geojson,u);
     if(newLayer&&u.visible) newLayer.addTo(map);
-    return {...u,layer:newLayer};
+    return{...u,layer:newLayer};
   },[buildLeafletLayer]);
 
   const RERENDER=new Set(["color","fillColor","fillOpacity","fillPattern","weight","pointRadius","markerType","markerColor","layerOpacity","showLabels","labelField"]);
 
-  const addLayer = useCallback((geojson,name)=>{
+  const addLayer=useCallback((geojson,name)=>{
     const map=mapRef.current; if(!map) return;
     const propKeys=getPropertyKeys(geojson);
     const isPoint=isPointLayer(geojson);
     const cfg={
-      id:crypto.randomUUID(), name, _geojson:geojson, visible:true, isPoint, isDrawn:false,
-      color:"#4e8cff", fillColor:"#4e8cff", fillOpacity:0.35, fillPattern:"solid",
-      weight:2, pointRadius:7, markerType:"drillhole", markerColor:"#111111",
-      layerOpacity:1, showLabels:false, labelField:propKeys[0]??"",
-      propKeys, legendLabel:name, includeInLegend:true,
+      id:crypto.randomUUID(),name,_geojson:geojson,visible:true,isPoint,isDrawn:false,
+      color:"#4e8cff",fillColor:"#4e8cff",fillOpacity:0.35,fillPattern:"solid",
+      weight:2,pointRadius:7,markerType:"drillhole",markerColor:"#111111",
+      layerOpacity:1,showLabels:false,labelField:propKeys[0]??"",
+      propKeys,legendLabel:name,includeInLegend:true,
     };
     const layer=buildLeafletLayer(geojson,cfg);
     if(!layer) return;
@@ -356,28 +442,27 @@ export default function App() {
     setLayers(p=>[...p,{...cfg,layer}]);
   },[buildLeafletLayer]);
 
-  const handleFile = async(file)=>{
+  const handleFile=async(file)=>{
     if(!file) return;
     try{
-      if(file.name.endsWith(".zip"))    { addLayer(await shp(await file.arrayBuffer()),file.name.replace(".zip","")); return; }
-      if(file.name.endsWith(".geojson")||file.name.endsWith(".json")) { addLayer(JSON.parse(await file.text()),file.name); return; }
-      if(file.name.endsWith(".csv"))    { addLayer(csvToGeoJSON(await file.text()),file.name.replace(".csv","")); return; }
+      if(file.name.endsWith(".zip"))    {addLayer(await shp(await file.arrayBuffer()),file.name.replace(".zip",""));return;}
+      if(file.name.endsWith(".geojson")||file.name.endsWith(".json")){addLayer(JSON.parse(await file.text()),file.name);return;}
+      if(file.name.endsWith(".csv"))    {addLayer(csvToGeoJSON(await file.text()),file.name.replace(".csv",""));return;}
       alert("Supported: .zip, .geojson, .json, .csv");
-    }catch(err){ console.error(err); alert(`Import failed: ${err.message}`); }
+    }catch(err){console.error(err);alert(`Import failed: ${err.message}`);}
   };
 
-  const updateLayer = useCallback((id,patch)=>{
+  const updateLayer=useCallback((id,patch)=>{
     const needsRerender=Object.keys(patch).some(k=>RERENDER.has(k));
     setLayers(p=>p.map(item=>{
       if(item.id!==id) return item;
-      if(needsRerender) return reRenderLayer(item,patch);
-      // For drawn layers, update style in place
-      if(item.isDrawn&&item.layer){
+      if(item.isDrawn){
         const u={...item,...patch};
-        item.layer.setStyle?.({ color:u.color,weight:+u.weight,fillColor:u.fillColor,fillOpacity:+u.fillOpacity,opacity:+u.layerOpacity });
+        item.layer?.setStyle?.({color:u.color,weight:+u.weight,fillColor:u.fillColor,fillOpacity:+u.fillOpacity,opacity:+u.layerOpacity});
         return u;
       }
-      return {...item,...patch};
+      if(needsRerender) return reRenderLayer(item,patch);
+      return{...item,...patch};
     }));
   },[reRenderLayer]);
 
@@ -387,150 +472,129 @@ export default function App() {
   };
   const removeLayer=(id)=>{
     const map=mapRef.current;
-    setLayers(p=>{ const t=p.find(l=>l.id===id); if(t) map?.removeLayer(t.layer); return p.filter(l=>l.id!==id); });
+    setLayers(p=>{const t=p.find(l=>l.id===id);if(t)map?.removeLayer(t.layer);return p.filter(l=>l.id!==id);});
   };
   const moveLayer=(id,dir)=>{
     setLayers(p=>{
-      const idx=p.findIndex(l=>l.id===id); if(idx<0) return p;
-      const ni=idx+dir; if(ni<0||ni>=p.length) return p;
-      const next=[...p]; [next[idx],next[ni]]=[next[ni],next[idx]];
+      const idx=p.findIndex(l=>l.id===id);if(idx<0)return p;
+      const ni=idx+dir;if(ni<0||ni>=p.length)return p;
+      const next=[...p];[next[idx],next[ni]]=[next[ni],next[idx]];
       const map=mapRef.current;
-      if(map) next.forEach(item=>{ if(item.visible&&item.layer){ map.removeLayer(item.layer); item.layer.addTo(map); } });
+      if(map) next.forEach(item=>{if(item.visible&&item.layer){map.removeLayer(item.layer);item.layer.addTo(map);}});
       return next;
     });
   };
 
   // Image overlay controls
-  const updateOverlayOpacity=(id,opacity)=>{
-    setImageOverlays(p=>p.map(o=>{ if(o.id!==id) return o; o.leafLayer.setOpacity(opacity); return{...o,opacity}; }));
-  };
-  const toggleOverlay=(id)=>{
-    const map=mapRef.current;
-    setImageOverlays(p=>p.map(o=>{ if(o.id!==id) return o; if(o.visible) map.removeLayer(o.leafLayer); else o.leafLayer.addTo(map); return{...o,visible:!o.visible}; }));
-  };
-  const removeOverlay=(id)=>{
-    const map=mapRef.current;
-    setImageOverlays(p=>{ const t=p.find(o=>o.id===id); if(t) map?.removeLayer(t.leafLayer); return p.filter(o=>o.id!==id); });
-  };
+  const updateOverlayOpacity=(id,opacity)=>{ setImageOverlays(p=>p.map(o=>{ if(o.id!==id)return o; o.leafLayer.setOpacity(opacity); return{...o,opacity}; })); };
+  const toggleOverlay=(id)=>{ const map=mapRef.current; setImageOverlays(p=>p.map(o=>{ if(o.id!==id)return o; if(o.visible)map.removeLayer(o.leafLayer);else o.leafLayer.addTo(map); return{...o,visible:!o.visible}; })); };
+  const removeOverlay=(id)=>{ const map=mapRef.current; setImageOverlays(p=>{const t=p.find(o=>o.id===id);if(t)map?.removeLayer(t.leafLayer);return p.filter(o=>o.id!==id);}); };
 
   const fitAll=()=>{
-    const map=mapRef.current; if(!map) return;
+    const map=mapRef.current;if(!map)return;
     const vis=layers.filter(l=>l.visible&&l.layer).map(l=>l.layer);
-    if(!vis.length) return;
-    try{ const b=L.featureGroup(vis).getBounds(); if(b.isValid()) map.fitBounds(b,{padding:[20,20]}); }catch{}
+    if(!vis.length)return;
+    try{const b=L.featureGroup(vis).getBounds();if(b.isValid())map.fitBounds(b,{padding:[20,20]});}catch{}
   };
-
   const switchBase=(type)=>{
-    const map=mapRef.current; if(!map) return;
-    const {osm,sat}=map._baseLayers;
-    if(map._activeBase) map.removeLayer(map._activeBase);
-    const next=type==="osm"?osm:sat; next.addTo(map); map._activeBase=next;
+    const map=mapRef.current;if(!map)return;
+    const{osm,sat}=map._baseLayers;
+    if(map._activeBase)map.removeLayer(map._activeBase);
+    const next=type==="osm"?osm:sat;next.addTo(map);map._activeBase=next;
   };
 
-  // ── Export — fixed centering ──────────────────────────────────────────────
-  const doExport = async(format)=>{
-    setExportStatus("working");
+  // ── PNG Export — captures map area at fixed size ──────────────────────────
+  const doExport=async()=>{
+    setExporting(true);
     try{
-      const scripts=[loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js")];
-      if(format==="pdf") scripts.push(loadScript("https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"));
-      await Promise.all(scripts);
+      await loadScript("https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js");
 
-      // Freeze map — scroll to top, hide sidebar temporarily
-      window.scrollTo(0,0);
+      // Hide sidebar, expand map to full width, wait for reflow + tiles
       const sidebar=document.querySelector(".sidebar");
       const mapSide=document.querySelector(".map-side");
-      const origSidebarDisplay=sidebar.style.display;
       sidebar.style.display="none";
       mapSide.style.width="100vw";
+      mapRef.current.invalidateSize();
+      await new Promise(r=>setTimeout(r,500));
 
-      const map=mapRef.current;
-      map.invalidateSize();
-      await new Promise(r=>setTimeout(r,400)); // let map reflow
-
-      // Wait for tiles
       await new Promise(resolve=>{
-        let pending=0;
-        document.querySelectorAll(".leaflet-tile-container img").forEach(img=>{ if(!img.complete) pending++; });
-        if(!pending) return resolve();
-        let done=0;
-        document.querySelectorAll(".leaflet-tile-container img").forEach(img=>{
-          if(!img.complete){
-            const cb=()=>{ done++; if(done>=pending) resolve(); };
-            img.addEventListener("load",cb,{once:true});
-            img.addEventListener("error",cb,{once:true});
-          }
-        });
-        setTimeout(resolve,4000);
+        let total=0,done=0;
+        document.querySelectorAll(".leaflet-tile-container img").forEach(img=>{ if(!img.complete){total++; img.addEventListener("load",()=>{done++;if(done>=total)resolve();},{once:true}); img.addEventListener("error",()=>{done++;if(done>=total)resolve();},{once:true});} });
+        if(!total) resolve();
+        setTimeout(resolve,5000);
       });
 
       const surface=document.querySelector(".export-surface");
       const canvas=await window.html2canvas(surface,{
-        useCORS:true, allowTaint:true, scale:2, logging:false,
-        backgroundColor:"#ffffff", imageTimeout:15000,
+        useCORS:true,allowTaint:true,scale:2,logging:false,backgroundColor:"#ffffff",imageTimeout:20000,
         onclone:(doc)=>{
-          // Fix Leaflet pane transforms in clone so layers align
-          doc.querySelectorAll(".leaflet-map-pane,.leaflet-tile-pane,.leaflet-overlay-pane,.leaflet-shadow-pane,.leaflet-marker-pane,.leaflet-tooltip-pane,.leaflet-popup-pane").forEach(el=>{
-            const t=el.style.transform;
-            if(t&&t.includes("translate")){
-              const m=t.match(/translate\(([^,]+),\s*([^)]+)\)/);
-              if(m){ el.style.transform="none"; el.style.left=(parseFloat(m[1])||0)+"px"; el.style.top=(parseFloat(m[2])||0)+"px"; }
-            }
+          // Convert Leaflet pane transforms to top/left so layers align
+          ["leaflet-map-pane","leaflet-tile-pane","leaflet-overlay-pane","leaflet-shadow-pane","leaflet-marker-pane","leaflet-tooltip-pane","leaflet-popup-pane"].forEach(cls=>{
+            doc.querySelectorAll(`.${cls}`).forEach(el=>{
+              const t=el.style.transform;
+              if(t&&t.includes("translate")){
+                const m=t.match(/translate3d\(([^,]+),\s*([^,]+),/)||t.match(/translate\(([^,]+),\s*([^)]+)\)/);
+                if(m){el.style.transform="none";el.style.left=(parseFloat(m[1])||0)+"px";el.style.top=(parseFloat(m[2])||0)+"px";}
+              }
+            });
           });
-          // Make SVG overlays visible
-          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(el=>{ el.style.visibility="visible"; el.style.display="block"; });
+          doc.querySelectorAll(".leaflet-overlay-pane svg").forEach(el=>{el.style.visibility="visible";el.style.display="block";});
         },
       });
 
-      // Restore sidebar
-      sidebar.style.display=origSidebarDisplay;
+      sidebar.style.display="";
       mapSide.style.width="";
-      map.invalidateSize();
+      mapRef.current.invalidateSize();
 
-      if(format==="png"){
-        const a=document.createElement("a");
-        a.download=`${title.toLowerCase().replace(/\s+/g,"-")}-map.png`;
-        a.href=canvas.toDataURL("image/png"); a.click();
-      } else {
-        const W=surface.offsetWidth, H=surface.offsetHeight;
-        const {jsPDF}=window.jspdf;
-        const pdf=new jsPDF({orientation:W>H?"landscape":"portrait",unit:"px",format:[W,H]});
-        pdf.addImage(canvas.toDataURL("image/png"),"PNG",0,0,W,H);
-        pdf.save(`${title.toLowerCase().replace(/\s+/g,"-")}-map.pdf`);
-      }
-      setExportStatus("done");
+      const a=document.createElement("a");
+      a.download=`${title.toLowerCase().replace(/\s+/g,"-")}-map.png`;
+      a.href=canvas.toDataURL("image/png");a.click();
     }catch(err){
-      console.error(err); setExportStatus("error");
-      alert("Export failed. Switch to 🗺 Street basemap — satellite tiles block cross-origin capture.");
-    }finally{ setTimeout(()=>setExportStatus("idle"),3000); }
+      console.error(err);
+      alert("Export failed. Switch to 🗺 Street basemap first — satellite tiles block cross-origin capture.");
+    }finally{setExporting(false);}
   };
 
-  // ── Render curved labels as SVG overlay ──────────────────────────────────
+  // ── Curved label renderer (SVG layer over map) ────────────────────────────
+  const [, tick]=useState(0);
+  useEffect(()=>{
+    const map=mapRef.current;if(!map)return;
+    const fn=()=>tick(n=>n+1);
+    map.on("move zoom moveend zoomend",fn);
+    return ()=>map.off("move zoom moveend zoomend",fn);
+  },[]);
+
   const renderCurvedLabels=()=>{
     const map=mapRef.current; if(!map||!curvedLabels.length) return null;
-    return curvedLabels.map(cl=>{
-      try{
-        const p1=map.latLngToContainerPoint(cl.p1);
-        const p2=map.latLngToContainerPoint(cl.p2);
-        const mx=(p1.x+p2.x)/2, my=(p1.y+p2.y)/2;
-        const dx=p2.x-p1.x, dy=p2.y-p1.y;
-        const len=Math.sqrt(dx*dx+dy*dy);
-        const cx=mx-dy*0.3, cy=my+dx*0.3;
-        const pathId=`cp-${cl.id}`;
-        return(
-          <svg key={cl.id} style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:1000}} xmlns="http://www.w3.org/2000/svg">
-            <defs>
-              <path id={pathId} d={`M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`}/>
-            </defs>
-            <text fill={cl.color} fontSize={cl.size} fontFamily="Arial" fontWeight="700" letterSpacing="1">
-              <textPath href={`#${pathId}`} startOffset="50%" textAnchor="middle">{cl.text}</textPath>
-            </text>
-          </svg>
-        );
-      }catch{ return null; }
-    });
+    return(
+      <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:1000}} xmlns="http://www.w3.org/2000/svg">
+        {curvedLabels.map(cl=>{
+          try{
+            const p1=map.latLngToContainerPoint(cl.p1);
+            const p2=map.latLngToContainerPoint(cl.p2);
+            const mx=(p1.x+p2.x)/2,my=(p1.y+p2.y)/2;
+            const dx=p2.x-p1.x,dy=p2.y-p1.y;
+            const cx=mx-dy*0.25,cy=my+dx*0.25;
+            const pid=`cvp-${cl.id}`;
+            return(
+              <g key={cl.id}>
+                <defs><path id={pid} d={`M ${p1.x} ${p1.y} Q ${cx} ${cy} ${p2.x} ${p2.y}`}/></defs>
+                <text fill={cl.color} fontSize={cl.size} fontFamily="Arial" fontWeight="700" letterSpacing="2">
+                  <textPath href={`#${pid}`} startOffset="50%" textAnchor="middle">{cl.text}</textPath>
+                </text>
+              </g>
+            );
+          }catch{return null;}
+        })}
+      </svg>
+    );
   };
 
-  // ─── Render ───────────────────────────────────────────────────────────────
+  // ── Compute title position ────────────────────────────────────────────────
+  const mapWidth = containerRef.current?.offsetWidth ?? 900;
+  const titleX = titlePos.x !== null ? titlePos.x : mapWidth - 250;
+
+  // ── Render ────────────────────────────────────────────────────────────────
   return(
     <div className="app-shell">
       <aside className="sidebar">
@@ -539,18 +603,20 @@ export default function App() {
         <Sec title="Import GIS Data">
           <label className="file-drop">
             <input type="file" accept=".zip,.geojson,.json,.csv" onChange={e=>handleFile(e.target.files?.[0])}/>
-            <span className="file-drop-hint">Click or drop file<br/><small>.zip · .geojson · .json · .csv</small></span>
+            <span className="file-drop-hint">Click or drop · <small>.zip .geojson .json .csv</small></span>
           </label>
         </Sec>
 
         <Sec title="Map Labels">
           <Field label="Title"><input value={title} onChange={e=>setTitle(e.target.value)}/></Field>
           <Field label="Subtitle"><input value={subtitle} onChange={e=>setSubtitle(e.target.value)}/></Field>
+          <div className="hint-text">Drag the title block on the map to reposition</div>
         </Sec>
 
         <Sec title="Branding">
           <Field label="Logo"><input type="file" accept="image/*" onChange={e=>loadImageFile(e.target.files?.[0],setLogo)}/></Field>
           {logo&&<button className="btn-ghost" onClick={()=>setLogo(null)}>✕ Remove logo</button>}
+          <div className="hint-text">Drag logo on map to reposition</div>
         </Sec>
 
         <Sec title="Basemap">
@@ -558,175 +624,187 @@ export default function App() {
             <button className="btn" onClick={()=>switchBase("sat")}>🛰 Satellite</button>
             <button className="btn" onClick={()=>switchBase("osm")}>🗺 Street</button>
           </div>
-          <div className="export-note" style={{marginTop:6}}>Use Street basemap for best export results</div>
+          <div className="export-note" style={{marginTop:6}}>Use Street basemap for PNG export</div>
         </Sec>
 
         <Sec title="Overlays">
           <Toggle label="North Arrow" checked={northArrow} onChange={setNorthArrow}/>
           <Toggle label="Legend"      checked={showLegend} onChange={setShowLegend}/>
           <Toggle label="Inset Map"   checked={showInset}  onChange={setShowInset}/>
-          {showInset&&(
-            <div style={{marginTop:8}}>
-              <div className="field-label">Upload inset image</div>
-              <input type="file" accept="image/*" onChange={e=>loadImageFile(e.target.files?.[0],setInsetImage)}/>
-              {insetImage&&<button className="btn-ghost" onClick={()=>setInsetImage(null)}>✕ Remove inset</button>}
-            </div>
-          )}
+          {showInset&&<>
+            <div className="field-label" style={{marginTop:8}}>Inset image</div>
+            <input type="file" accept="image/*" onChange={e=>loadImageFile(e.target.files?.[0],setInsetImage)}/>
+            {insetImage&&<button className="btn-ghost" onClick={()=>setInsetImage(null)}>✕ Remove</button>}
+            <div className="hint-text">Drag inset on map to reposition</div>
+          </>}
         </Sec>
 
-        {/* ── Image overlay (magnetics raster) ── */}
+        {/* Image overlay */}
         <Sec title="Image Overlay">
-          <div className="field-label">Upload raster (PNG/JPG)</div>
-          <input type="file" accept="image/*" onChange={e=>loadImageFile(e.target.files?.[0],setOverlayImage)}/>
-          {overlayImage&&!placingOverlay&&(
-            <button className="btn btn-placing-outline" style={{marginTop:6,width:"100%"}}
-              onClick={()=>setPlacingOverlay("p1")}>
-              📌 Click NW corner on map
-            </button>
-          )}
-          {placingOverlay==="p1"&&<div className="place-hint">Click the NW (top-left) corner of the image on the map</div>}
-          {placingOverlay==="p2"&&<div className="place-hint">Now click the SE (bottom-right) corner</div>}
-          {imageOverlays.length>0&&(
-            <div style={{marginTop:10}}>
-              {imageOverlays.map(o=>(
-                <div key={o.id} className="overlay-row">
-                  <span className="layer-card-name">{o.name}</span>
-                  <input type="range" min="0" max="1" step="0.05" value={o.opacity}
-                    onChange={e=>updateOverlayOpacity(o.id,+e.target.value)} style={{flex:1}}/>
-                  <button className="btn-icon-sm" onClick={()=>toggleOverlay(o.id)}>{o.visible?"👁":"🚫"}</button>
-                  <button className="btn-icon-sm" onClick={()=>removeOverlay(o.id)}>✕</button>
-                </div>
-              ))}
+          <Field label="Upload raster (PNG/JPG)">
+            <input type="file" accept="image/*" onChange={e=>{
+              if(!e.target.files?.[0]) return;
+              loadImageFile(e.target.files[0],(src)=>setPendingOverlay({src,step:"p1",p1:null}));
+            }}/>
+          </Field>
+          {pendingOverlay&&<div className="place-hint">{pendingOverlay.step==="p1"?"Click NW (top-left) corner on map":"Click SE (bottom-right) corner on map"}</div>}
+          {imageOverlays.map(o=>(
+            <div key={o.id} className="overlay-row">
+              <span className="overlay-name">{o.name}</span>
+              <input type="range" min="0" max="1" step="0.05" value={o.opacity} onChange={e=>updateOverlayOpacity(o.id,+e.target.value)} style={{flex:1}}/>
+              <button className="btn-icon-sm" onClick={()=>toggleOverlay(o.id)}>{o.visible?"👁":"🚫"}</button>
+              <button className="btn-icon-sm" onClick={()=>removeOverlay(o.id)}>✕</button>
             </div>
-          )}
+          ))}
         </Sec>
 
-        {/* ── Draw tools ── */}
+        {/* Draw */}
         <Sec title="Draw on Map">
-          <div className="draw-tools">
-            {["none","circle","rectangle","polygon","line"].map(m=>(
-              <button key={m}
+          <div className="draw-grid">
+            {[{m:"none",label:"✋",tip:"Off"},{m:"circle",label:"⬤",tip:"Circle"},{m:"rectangle",label:"▬",tip:"Rectangle"},{m:"polygon",label:"⬠",tip:"Polygon"},{m:"line",label:"╱",tip:"Line"}].map(({m,label,tip})=>(
+              <button key={m} title={tip}
                 className={`btn draw-btn${drawMode===m?" draw-active":""}`}
-                onClick={()=>{ setDrawMode(m); drawStateRef.current={mode:m,points:[],layer:null}; }}
-              >
-                {m==="none"?"✋ Off":m==="circle"?"⬤ Circle":m==="rectangle"?"▬ Rect":m==="polygon"?"⬠ Poly":"╱ Line"}
+                onClick={()=>{ setDrawMode(m); drawRef.current={mode:m,points:[],preview:null}; setDrawActive(false); }}>
+                <span>{label}</span><span className="draw-btn-label">{tip}</span>
               </button>
             ))}
           </div>
-          {drawMode!=="none"&&(
-            <div style={{marginTop:8}}>
-              <div className="draw-hint">
-                {drawMode==="circle"&&"Click center, then click edge to set radius"}
-                {drawMode==="rectangle"&&"Click two opposite corners"}
-                {(drawMode==="polygon"||drawMode==="line")&&"Click points, double-click to finish"}
-              </div>
-              <div className="color-trio" style={{marginTop:8}}>
-                <div><div className="field-label">Stroke</div><input type="color" value={drawColor} onChange={e=>setDrawColor(e.target.value)}/></div>
-                <div><div className="field-label">Fill</div><input type="color" value={drawFill} onChange={e=>setDrawFill(e.target.value)}/></div>
-                <div><div className="field-label">Opacity</div>
-                  <input type="range" min="0" max="1" step="0.05" value={drawOpacity} onChange={e=>setDrawOpacity(+e.target.value)} style={{marginTop:6}}/>
-                </div>
-              </div>
-            </div>
-          )}
-        </Sec>
-
-        {/* ── Annotations ── */}
-        <Sec title="Annotations">
-          <div className="annot-tabs">
-            <span className="annot-tab-label">Plain box</span>
+          {drawMode!=="none"&&<div className="draw-hint">
+            {drawMode==="circle"&&(drawRef.current.points.length===0?"Click to set center":"Click to set radius")}
+            {drawMode==="rectangle"&&(drawRef.current.points.length===0?"Click first corner":"Click opposite corner")}
+            {(drawMode==="polygon"||drawMode==="line")&&(drawActive?"Double-click to finish · Esc to cancel":"Click to start")}
+            {" "}<span style={{color:"#7cc67c"}}>Esc cancels</span>
+          </div>}
+          <div className="color-trio" style={{marginTop:8}}>
+            <div><div className="field-label">Stroke</div><input type="color" value={drawStyle.color} onChange={e=>setDrawStyle(s=>({...s,color:e.target.value}))}/></div>
+            <div><div className="field-label">Fill</div><input type="color" value={drawStyle.fill} onChange={e=>setDrawStyle(s=>({...s,fill:e.target.value}))}/></div>
+            <div><div className="field-label">Opacity</div><input type="range" min="0" max="1" step="0.05" value={drawStyle.opacity} onChange={e=>setDrawStyle(s=>({...s,opacity:+e.target.value}))}/></div>
           </div>
-          <Field label="Text">
-            <input placeholder="~$1B USD MARKET CAP" value={annotText} onChange={e=>setAnnotText(e.target.value)}/>
-          </Field>
-          <div className="color-pick-row"><span>Color</span><input type="color" value={annotColor} onChange={e=>setAnnotColor(e.target.value)}/></div>
-          <button className={`btn${placingAnnot?" btn-placing":""}`} onClick={()=>setPlacingAnnot(p=>!p)} style={{marginTop:8,width:"100%"}}>
-            {placingAnnot?"🎯 Click map to place…":"＋ Place Box"}
-          </button>
-          {annotations.length>0&&(
-            <div className="annot-list">
-              {annotations.map(a=>(
-                <div key={a.id} className="annot-row">
-                  <span className="annot-swatch" style={{background:a.color}}/>
-                  <input value={a.text} onChange={e=>setAnnotations(p=>p.map(x=>x.id===a.id?{...x,text:e.target.value}:x))}/>
-                  <button className="btn-icon-sm" onClick={()=>setAnnotations(p=>p.filter(x=>x.id!==a.id))}>✕</button>
-                </div>
-              ))}
-            </div>
-          )}
         </Sec>
 
-        {/* ── Callout boxes ── */}
-        <Sec title="Callout Boxes">
-          <Field label="Text (use \\n for line breaks)">
-            <input placeholder="NEC11-004&#10;236.19m @ 2.10% REO" value={calloutText} onChange={e=>setCalloutText(e.target.value)}/>
+        {/* Annotation boxes */}
+        <Sec title="Annotation Box">
+          <Field label="Text"><input placeholder="~$1B USD MARKET CAP" value={annotDraft.text} onChange={e=>setAnnotDraft(d=>({...d,text:e.target.value}))}/></Field>
+          <div className="color-pick-row"><span>Color</span><input type="color" value={annotDraft.color} onChange={e=>setAnnotDraft(d=>({...d,color:e.target.value}))}/></div>
+          <button className={`btn${annotDraft._placing?" btn-placing":""}`} style={{marginTop:8,width:"100%"}}
+            onClick={()=>setAnnotDraft(d=>({...d,_placing:!d._placing}))}>
+            {annotDraft._placing?"🎯 Click map to place…":"＋ Place Box"}
+          </button>
+          <div className="hint-text">Drag boxes on map to reposition</div>
+          {annotations.map(a=>(
+            <div key={a.id} className="annot-row">
+              <span className="annot-swatch" style={{background:a.color}}/>
+              <input value={a.text} onChange={e=>setAnnotations(p=>p.map(x=>x.id===a.id?{...x,text:e.target.value}:x))}/>
+              <button className="btn-icon-sm" onClick={()=>setAnnotations(p=>p.filter(x=>x.id!==a.id))}>✕</button>
+            </div>
+          ))}
+        </Sec>
+
+        {/* Callout boxes */}
+        <Sec title="Callout Box">
+          <Field label="Text (\\n = new line)">
+            <input placeholder="NEC11-004&#10;236m @ 2.10% REO" value={calloutDraft.text} onChange={e=>setCalloutDraft(d=>({...d,text:e.target.value}))}/>
           </Field>
           <div className="color-trio">
-            <div><div className="field-label">Background</div><input type="color" value={calloutColor} onChange={e=>setCalloutColor(e.target.value)}/></div>
-            <div><div className="field-label">Border</div><input type="color" value={calloutBorder} onChange={e=>setCalloutBorder(e.target.value)}/></div>
+            <div><div className="field-label">Background</div><input type="color" value={calloutDraft.bgColor} onChange={e=>setCalloutDraft(d=>({...d,bgColor:e.target.value}))}/></div>
+            <div><div className="field-label">Border/text</div><input type="color" value={calloutDraft.borderColor} onChange={e=>setCalloutDraft(d=>({...d,borderColor:e.target.value}))}/></div>
           </div>
-          <button className={`btn${placingCallout?" btn-placing":""}`} onClick={()=>setPlacingCallout(p=>!p)} style={{marginTop:8,width:"100%"}}>
-            {placingCallout?"🎯 Click point on map…":"＋ Place Callout"}
+          <button className={`btn${calloutDraft._placing?" btn-placing":""}`} style={{marginTop:8,width:"100%"}}
+            onClick={()=>setCalloutDraft(d=>({...d,_placing:!d._placing}))}>
+            {calloutDraft._placing?"🎯 Click pin location…":"＋ Place Callout"}
           </button>
-          {callouts.length>0&&(
-            <div className="annot-list">
-              {callouts.map(c=>(
-                <div key={c.id} className="annot-row">
-                  <span className="annot-swatch" style={{background:c.border,borderRadius:0}}/>
-                  <input value={c.text} onChange={e=>setCallouts(p=>p.map(x=>x.id===c.id?{...x,text:e.target.value}:x))}/>
-                  <button className="btn-icon-sm" onClick={()=>setCallouts(p=>p.filter(x=>x.id!==c.id))}>✕</button>
-                </div>
-              ))}
+          <div className="hint-text">Drag callout box on map · leader line follows</div>
+          {callouts.map(c=>(
+            <div key={c.id} className="annot-row">
+              <span className="annot-swatch" style={{background:c.borderColor,borderRadius:0}}/>
+              <input value={c.text} onChange={e=>setCallouts(p=>p.map(x=>x.id===c.id?{...x,text:e.target.value}:x))}/>
+              <button className="btn-icon-sm" onClick={()=>setCallouts(p=>p.filter(x=>x.id!==c.id))}>✕</button>
             </div>
-          )}
+          ))}
         </Sec>
 
-        {/* ── Curved text ── */}
+        {/* Curved text */}
         <Sec title="Curved Text">
           <Field label="Text">
-            <input placeholder="Elk Creek Carbonatite Complex" value={curvedText} onChange={e=>setCurvedText(e.target.value)}/>
+            <input placeholder="Elk Creek Carbonatite Complex" value={curvedDraft.text} onChange={e=>setCurvedDraft(d=>({...d,text:e.target.value}))}/>
           </Field>
           <div className="color-trio">
-            <div><div className="field-label">Color</div><input type="color" value={curvedColor} onChange={e=>setCurvedColor(e.target.value)}/></div>
-            <div><div className="field-label">Size</div>
-              <input type="range" min="10" max="48" step="1" value={curvedSize} onChange={e=>setCurvedSize(+e.target.value)} style={{marginTop:6}}/>
-              <div style={{fontSize:10,color:"#4b5a7a",marginTop:2}}>{curvedSize}px</div>
-            </div>
+            <div><div className="field-label">Color</div><input type="color" value={curvedDraft.color} onChange={e=>setCurvedDraft(d=>({...d,color:e.target.value}))}/></div>
+            <div><div className="field-label">Size ({curvedDraft.size}px)</div><input type="range" min="10" max="52" value={curvedDraft.size} onChange={e=>setCurvedDraft(d=>({...d,size:+e.target.value}))}/></div>
           </div>
-          <button className={`btn${placingCurved?" btn-placing":""}`}
-            onClick={()=>{ if(!curvedText.trim()){alert("Enter text first.");return;} setPlacingCurved("p1"); }}
-            style={{marginTop:8,width:"100%"}}>
-            {placingCurved==="p1"?"🎯 Click start point…":placingCurved==="p2"?"🎯 Click end point…":"＋ Place Curved Text"}
+          <button className={`btn${curvedStep?" btn-placing":""}`} style={{marginTop:8,width:"100%"}}
+            onClick={()=>{ if(!curvedDraft.text.trim()){alert("Enter text first.");return;} setCurvedStep(curvedStep?"p2":"p1"); }}>
+            {curvedStep==="p1"?"🎯 Click start point…":curvedStep==="p2"?"🎯 Click end point…":"＋ Place Curved Text"}
           </button>
-          {curvedLabels.length>0&&(
-            <div className="annot-list">
-              {curvedLabels.map(cl=>(
-                <div key={cl.id} className="annot-row">
-                  <span style={{fontSize:11,color:cl.color,fontWeight:700,flexShrink:0}}>A</span>
-                  <input value={cl.text} onChange={e=>setCurvedLabels(p=>p.map(x=>x.id===cl.id?{...x,text:e.target.value}:x))}/>
-                  <button className="btn-icon-sm" onClick={()=>setCurvedLabels(p=>p.filter(x=>x.id!==cl.id))}>✕</button>
+          {curvedLabels.map(cl=>(
+            <div key={cl.id} className="annot-row">
+              <span style={{fontSize:11,color:cl.color,fontWeight:700,flexShrink:0,width:14}}>A</span>
+              <input value={cl.text} onChange={e=>setCurvedLabels(p=>p.map(x=>x.id===cl.id?{...x,text:e.target.value}:x))}/>
+              <button className="btn-icon-sm" onClick={()=>setCurvedLabels(p=>p.filter(x=>x.id!==cl.id))}>✕</button>
+            </div>
+          ))}
+        </Sec>
+
+        {/* Legend editor */}
+        <Sec title="Legend Editor">
+          <div className="hint-text" style={{marginBottom:8}}>Drag legend on map to reposition</div>
+          <div className="legend-editor-row">
+            <input placeholder="Label text" value={legendDraft.text} onChange={e=>setLegendDraft(d=>({...d,text:e.target.value}))} style={{flex:2}}/>
+            <select value={legendDraft.type} onChange={e=>setLegendDraft(d=>({...d,type:e.target.value}))} style={{flex:1}}>
+              <option value="swatch">■ Swatch</option>
+              <option value="marker">● Marker</option>
+              <option value="line">― Line</option>
+            </select>
+            <input type="color" value={legendDraft.color} onChange={e=>setLegendDraft(d=>({...d,color:e.target.value}))}/>
+          </div>
+          {legendDraft.type==="marker"&&(
+            <select value={legendDraft.markerType} onChange={e=>setLegendDraft(d=>({...d,markerType:e.target.value}))} style={{marginTop:4}}>
+              {MARKER_TYPES.map(m=><option key={m.value} value={m.value}>{m.label}</option>)}
+            </select>
+          )}
+          <button className="btn" style={{marginTop:6,width:"100%"}} onClick={()=>{
+            if(!legendDraft.text.trim()) return;
+            setLegendItems(p=>[...p,{id:crypto.randomUUID(),...legendDraft}]);
+            setLegendDraft(d=>({...d,text:""}));
+          }}>＋ Add Legend Entry</button>
+          {legendItems.length>0&&(
+            <div style={{marginTop:8}}>
+              {legendItems.map((item,i)=>(
+                <div key={item.id} className="legend-edit-row">
+                  <LegendSymbol item={item}/>
+                  <span style={{flex:1,fontSize:11,color:"#c8d3e8",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{item.text}</span>
+                  <button className="btn-order" onClick={()=>setLegendItems(p=>{const n=[...p];if(i>0)[n[i],n[i-1]]=[n[i-1],n[i]];return n;})}>▲</button>
+                  <button className="btn-order" onClick={()=>setLegendItems(p=>{const n=[...p];if(i<n.length-1)[n[i],n[i+1]]=[n[i+1],n[i]];return n;})}>▼</button>
+                  <button className="btn-icon-sm" onClick={()=>setLegendItems(p=>p.filter(x=>x.id!==item.id))}>✕</button>
                 </div>
               ))}
             </div>
+          )}
+          {/* Auto-add from layers */}
+          {layers.filter(l=>l.includeInLegend).length>0&&(
+            <button className="btn-ghost" style={{marginTop:6}} onClick={()=>{
+              const toAdd=layers.filter(l=>l.includeInLegend).map(l=>({
+                id:crypto.randomUUID(),text:l.legendLabel,
+                type:l.isPoint?"marker":"swatch",
+                color:l.isPoint?l.markerColor:l.fillColor,
+                markerType:l.markerType||"circle",
+              }));
+              setLegendItems(p=>[...p,...toAdd]);
+            }}>↓ Import from layers</button>
           )}
         </Sec>
 
         <Sec title="Export">
           <button className="btn" onClick={fitAll} style={{width:"100%",marginBottom:6}}>Fit All Layers</button>
-          <div className="row2">
-            <button className={`btn btn-export${exportStatus==="done"?" btn-export-done":""}`} onClick={()=>doExport("png")} disabled={exportStatus==="working"}>
-              {exportStatus==="working"?"…":"PNG"}
-            </button>
-            <button className={`btn btn-export${exportStatus==="done"?" btn-export-done":""}`} onClick={()=>doExport("pdf")} disabled={exportStatus==="working"}>
-              {exportStatus==="working"?"…":"PDF"}
-            </button>
-          </div>
-          <div className="export-note">PDF opens in Illustrator / Acrobat for editing</div>
+          <button className={`btn btn-export${exporting?" btn-export-working":""}`} onClick={doExport} disabled={exporting} style={{width:"100%"}}>
+            {exporting?"Exporting…":"⬇ Export PNG"}
+          </button>
+          <div className="export-note">Switch to Street basemap for best results</div>
         </Sec>
 
         <Sec title={`Layers${layers.length?` (${layers.length})`:""}`}>
           {layers.length===0
-            ?<div className="empty-hint">No layers yet. Import or draw above.</div>
+            ?<div className="empty-hint">No layers yet.</div>
             :layers.map((l,idx)=>(
               <LayerCard key={l.id} l={l} idx={idx} total={layers.length}
                 onUpdate={p=>updateLayer(l.id,p)}
@@ -739,15 +817,34 @@ export default function App() {
         </Sec>
       </aside>
 
-      {/* ── Map surface ── */}
+      {/* ── MAP SURFACE ── */}
       <div className="map-side export-surface">
-        <div className="title-block">
+        <div ref={containerRef} id="map"/>
+
+        {/* Curved text SVG */}
+        {renderCurvedLabels()}
+
+        {/* Callout boxes — SVG so leader line is always visible */}
+        {callouts.map(c=>(
+          <CalloutBox key={c.id} c={c}
+            onChange={patch=>setCallouts(p=>p.map(x=>x.id===c.id?{...x,...patch}:x))}
+          />
+        ))}
+
+        {/* Draggable title block */}
+        <DraggableOverlay x={titleX} y={titlePos.y} onPosChange={p=>setTitlePos(p)} className="title-block">
           <div className="title-main">{title}</div>
           <div className="title-sub">{subtitle}</div>
-        </div>
+        </DraggableOverlay>
 
-        {logo&&<img src={logo} alt="Logo" className="logo-block"/>}
+        {/* Draggable logo */}
+        {logo&&(
+          <DraggableOverlay x={logoPos.x} y={logoPos.y} onPosChange={setLogoPos}>
+            <img src={logo} alt="Logo" className="logo-img"/>
+          </DraggableOverlay>
+        )}
 
+        {/* North arrow — fixed top-left */}
         {northArrow&&(
           <div className="north-arrow">
             <svg viewBox="0 0 40 58" width="36" height="52">
@@ -758,105 +855,83 @@ export default function App() {
           </div>
         )}
 
-        {showInset&&insetImage&&(
-          <div className="inset-map" style={{overflow:"hidden",padding:0}}>
-            <img src={insetImage} alt="Inset" style={{width:"100%",height:"100%",objectFit:"cover"}}/>
-          </div>
+        {/* Draggable inset */}
+        {showInset&&(
+          <DraggableOverlay x={insetPos.x??10} y={insetPos.y} onPosChange={setInsetPos} className="inset-wrap">
+            {insetImage
+              ?<img src={insetImage} alt="Inset" style={{width:190,height:140,objectFit:"cover",display:"block"}}/>
+              :<div className="inset-empty"><span>Upload inset image in sidebar</span></div>
+            }
+          </DraggableOverlay>
         )}
-        {showInset&&!insetImage&&(
-          <div className="inset-map inset-empty">
-            <span>Upload inset image in sidebar</span>
-          </div>
-        )}
 
-        <div ref={containerRef} id="map"/>
-
-        {/* Curved text SVG layer — re-renders on map move */}
-        <MapMoveRenderer mapRef={mapRef} render={renderCurvedLabels}/>
-
-        {/* Callout boxes with leader lines */}
-        {callouts.map(c=>(
-          <CalloutBox key={c.id} c={c} onChange={patch=>setCallouts(p=>p.map(x=>x.id===c.id?{...x,...patch}:x))}/>
-        ))}
-
-        {/* Plain annotation boxes */}
-        {annotations.map(a=>(
-          <div key={a.id} className="annotation-box" style={{left:a.x,top:a.y,background:a.color}}>
-            {a.text}
-          </div>
-        ))}
-
-        {showLegend&&layers.some(l=>l.includeInLegend)&&(
-          <div className="legend-block">
-            {layers.filter(l=>l.includeInLegend).map(l=>(
-              <div key={l.id} className="legend-row">
-                {l.isPoint
-                  ?<img src={markerSvgUrl(l.markerType,l.markerColor,16)} width="16" height="16" style={{flexShrink:0}} alt=""/>
-                  :<span className="legend-swatch" style={{background:l.fillColor,opacity:l.fillOpacity,border:`${Math.max(1,l.weight)}px solid ${l.color}`}}/>
-                }
-                <span>{l.legendLabel}</span>
+        {/* Draggable legend */}
+        {showLegend&&legendItems.length>0&&(
+          <DraggableOverlay
+            x={legendPos.x}
+            y={legendPos.y??-1} // will be bottom via CSS if -1
+            onPosChange={setLegendPos}
+            className="legend-block"
+            style={legendPos.y===-1?{bottom:30,top:"auto"}:{}}
+          >
+            {legendItems.map(item=>(
+              <div key={item.id} className="legend-row">
+                <LegendSymbol item={item}/>
+                <span>{item.text}</span>
               </div>
             ))}
-          </div>
+          </DraggableOverlay>
         )}
+
+        {/* Draggable plain annotation boxes */}
+        {annotations.map(a=>(
+          <DraggableOverlay key={a.id} x={a.x} y={a.y} onPosChange={p=>setAnnotations(prev=>prev.map(x=>x.id===a.id?{...x,...p}:x))}>
+            <div className="annotation-box" style={{background:a.color}}>{a.text}</div>
+          </DraggableOverlay>
+        ))}
       </div>
     </div>
   );
 }
 
-// ── Callout box component ─────────────────────────────────────────────────────
-function CalloutBox({ c, onChange }) {
-  const [dragging, setDragging] = useState(false);
-  const dragRef = useRef(null);
+// ─── Legend symbol display ────────────────────────────────────────────────────
+function LegendSymbol({ item }) {
+  if (item.type==="marker") return <img src={markerSvgUrl(item.markerType,item.color,16)} width="16" height="16" style={{flexShrink:0}} alt=""/>;
+  if (item.type==="line")   return <svg width="24" height="16" style={{flexShrink:0}}><line x1="0" y1="8" x2="24" y2="8" stroke={item.color} strokeWidth="2.5"/></svg>;
+  return <span className="legend-swatch" style={{background:item.color}}/>;
+}
 
-  const onMouseDown = (e) => {
-    e.preventDefault();
-    const startX = e.clientX - c.boxX;
-    const startY = e.clientY - c.boxY;
-    const onMove = (ev) => onChange({ boxX: ev.clientX - startX, boxY: ev.clientY - startY });
-    const onUp   = () => { window.removeEventListener("mousemove",onMove); window.removeEventListener("mouseup",onUp); };
+// ─── Callout box (SVG with draggable box, fixed pin) ─────────────────────────
+function CalloutBox({ c, onChange }) {
+  const lines = c.text.replace(/\\n/g,"\n").split("\n");
+  const w = Math.max(...lines.map(l=>l.length))*8+24;
+  const h = lines.length*18+14;
+
+  const onBoxMouseDown=(e)=>{
+    if(e.button!==0) return;
+    e.stopPropagation(); e.preventDefault();
+    const startX=e.clientX-c.boxX, startY=e.clientY-c.boxY;
+    const onMove=(ev)=>onChange({boxX:ev.clientX-startX,boxY:ev.clientY-startY});
+    const onUp=()=>{ window.removeEventListener("mousemove",onMove); window.removeEventListener("mouseup",onUp); };
     window.addEventListener("mousemove",onMove);
     window.addEventListener("mouseup",onUp);
   };
 
-  const lines = c.text.replace(/\\n/g,"\n").split("\n");
-  const w = Math.max(...lines.map(l=>l.length)) * 8 + 20;
-
-  return (
+  return(
     <svg style={{position:"absolute",top:0,left:0,width:"100%",height:"100%",pointerEvents:"none",zIndex:1001}} xmlns="http://www.w3.org/2000/svg">
-      {/* Leader line */}
-      <line x1={c.pinX} y1={c.pinY} x2={c.boxX+w/2} y2={c.boxY+lines.length*18+8}
-        stroke={c.border} strokeWidth="1.5" strokeDasharray="4,2"/>
-      {/* Pin dot */}
-      <circle cx={c.pinX} cy={c.pinY} r="4" fill={c.border}/>
-      {/* Box — pointer-events on this g only */}
-      <g style={{pointerEvents:"all",cursor:"move"}} onMouseDown={onMouseDown}>
-        <rect x={c.boxX} y={c.boxY} width={w} height={lines.length*18+12}
-          fill={c.color} stroke={c.border} strokeWidth="1.5" rx="3"/>
+      <line x1={c.pinX} y1={c.pinY} x2={c.boxX+w/2} y2={c.boxY+h} stroke={c.borderColor} strokeWidth="1.5" strokeDasharray="5,3"/>
+      <circle cx={c.pinX} cy={c.pinY} r="5" fill={c.borderColor}/>
+      <g style={{pointerEvents:"all",cursor:"move"}} onMouseDown={onBoxMouseDown}>
+        <rect x={c.boxX} y={c.boxY} width={w} height={h} fill={c.bgColor} stroke={c.borderColor} strokeWidth="1.5" rx="3"/>
         {lines.map((line,i)=>(
-          <text key={i} x={c.boxX+10} y={c.boxY+16+i*18}
-            fontSize="12" fontFamily="Arial" fontWeight="600" fill={c.border}>
-            {line}
-          </text>
+          <text key={i} x={c.boxX+10} y={c.boxY+16+i*18} fontSize="12" fontFamily="Arial" fontWeight="600" fill={c.borderColor}>{line}</text>
         ))}
       </g>
     </svg>
   );
 }
 
-// ── Re-render trigger for curved text (needs map reprojection on move) ────────
-function MapMoveRenderer({ mapRef, render }) {
-  const [, forceUpdate] = useState(0);
-  useEffect(()=>{
-    const map=mapRef.current; if(!map) return;
-    const fn=()=>forceUpdate(n=>n+1);
-    map.on("move zoom moveend zoomend",fn);
-    return ()=>map.off("move zoom moveend zoomend",fn);
-  },[mapRef]);
-  return <>{render()}</>;
-}
-
-// ── Sub-components ────────────────────────────────────────────────────────────
+// ─── Sub-components ───────────────────────────────────────────────────────────
 function Sec({title,children}){ return <div className="sec"><div className="sec-title">{title}</div>{children}</div>; }
 function Field({label,children}){ return <div className="field"><div className="field-label">{label}</div>{children}</div>; }
 function Toggle({label,checked,onChange}){
@@ -885,7 +960,7 @@ function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove}){
       {open&&(
         <div className="layer-card-body">
           <Field label="Legend label"><input value={l.legendLabel} onChange={e=>onUpdate({legendLabel:e.target.value})}/></Field>
-          <Field label={`Layer opacity — ${Math.round(+l.layerOpacity*100)}%`}>
+          <Field label={`Opacity — ${Math.round(+l.layerOpacity*100)}%`}>
             <input type="range" min="0" max="1" step="0.05" value={l.layerOpacity} onChange={e=>onUpdate({layerOpacity:e.target.value})}/>
           </Field>
           <div className="color-trio">
@@ -893,11 +968,11 @@ function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove}){
             <div><div className="field-label">Fill</div><input type="color" value={l.fillColor} onChange={e=>onUpdate({fillColor:e.target.value})}/></div>
             {l.isPoint&&<div><div className="field-label">Marker</div><input type="color" value={l.markerColor} onChange={e=>onUpdate({markerColor:e.target.value})}/></div>}
           </div>
-          <Field label="Fill pattern">
+          {!l.isDrawn&&<Field label="Fill pattern">
             <select value={l.fillPattern} onChange={e=>onUpdate({fillPattern:e.target.value})}>
               {FILL_PATTERNS.map(p=><option key={p.value} value={p.value}>{p.label}</option>)}
             </select>
-          </Field>
+          </Field>}
           <Field label={`Fill opacity — ${Math.round(+l.fillOpacity*100)}%`}>
             <input type="range" min="0" max="1" step="0.05" value={l.fillOpacity} onChange={e=>onUpdate({fillOpacity:e.target.value})}/>
           </Field>
