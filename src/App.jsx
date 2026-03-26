@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import L from "leaflet";
 import shp from "shpjs";
+import { LAYER_PRESETS, applyPresetToLayer, makeLegendItemFromLayer } from "./mapPresets";
+import { downloadProjectFile, parseProjectFile, serializeProject } from "./projectState";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 const MARKER_TYPES = [
@@ -302,6 +304,7 @@ export default function App() {
   const mapRef       = useRef(null);
   const containerRef = useRef(null);
   const drawRef      = useRef({ points:[], preview:null, center:null });
+  const projectInputRef = useRef(null);
 
   const [layers,       setLayers]       = useState([]);
   const [title,        setTitle]        = useState("RIFT PROJECT");
@@ -331,6 +334,8 @@ export default function App() {
   const [drawActive,   setDrawActive]   = useState(false);
   const [exporting,    setExporting]    = useState(false);
   const [exportType,   setExportType]   = useState("png");
+  const [exportScale,  setExportScale]  = useState(3);
+  const [baseMap,      setBaseMap]      = useState("sat");
   const [draggingAny,  setDraggingAny]  = useState(false);
   const [selectedId,   setSelectedId]   = useState(null);
   const [groups,       setGroups]       = useState([]);
@@ -459,7 +464,7 @@ export default function App() {
     setLayers(p=>[...p,{
       id:crypto.randomUUID(),name,layer,_geojson:null,visible:true,isPoint:false,isDrawn:true,
       editablePoints,color:drawStyle.color,fillColor:drawStyle.fill,fillOpacity:drawStyle.opacity,
-      fillPattern:"solid",weight:drawStyle.weight,layerOpacity:1,
+      fillPattern:"solid",weight:drawStyle.weight,layerOpacity:1,dashArray:"",legendSymbol:"swatch",legendDashArray:"",preset:"",
       legendLabel:name,includeInLegend:false,propKeys:[],showLabels:false,labelField:"",
     }]);
   },[drawStyle]);
@@ -473,7 +478,7 @@ export default function App() {
     else if(cfg.fillPattern==="solid") fillStyle={fill:true,fillColor:cfg.fillColor,fillOpacity:+cfg.fillOpacity};
     else                               fillStyle={fill:true,fillColor:`url(#mvp-${cfg.fillPattern})`,fillOpacity:1};
     return L.geoJSON(geojson,{
-      style:()=>({color:cfg.color,weight:+cfg.weight,opacity:+cfg.layerOpacity,...fillStyle}),
+      style:()=>({color:cfg.color,weight:+cfg.weight,opacity:+cfg.layerOpacity,dashArray:cfg.dashArray||undefined,lineCap:"round",lineJoin:"round",...fillStyle}),
       pointToLayer:(_,latlng)=>L.marker(latlng,{icon:makeMarkerIcon(cfg.markerType,cfg.markerColor,+cfg.pointRadius*2),opacity:+cfg.layerOpacity}),
       onEachFeature:(feature,l)=>{
         const p=feature.properties||{};
@@ -494,7 +499,7 @@ export default function App() {
     return{...u,layer:nl};
   },[buildLeafletLayer]);
 
-  const RERENDER=new Set(["color","fillColor","fillOpacity","fillPattern","weight","pointRadius","markerType","markerColor","layerOpacity","showLabels","labelField"]);
+  const RERENDER=new Set(["color","fillColor","fillOpacity","fillPattern","weight","pointRadius","markerType","markerColor","layerOpacity","showLabels","labelField","dashArray"]);
 
   const addLayer=useCallback((geojson,name)=>{
     const map=mapRef.current;if(!map)return;
@@ -505,7 +510,7 @@ export default function App() {
       color:"#4e8cff",fillColor:"#4e8cff",fillOpacity:0.35,fillPattern:"solid",
       weight:2,pointRadius:6,markerType:"circle",markerColor:"#1a1a1a",
       layerOpacity:1,showLabels:false,labelField:propKeys[0]??"",
-      propKeys,legendLabel:name,includeInLegend:true,
+      propKeys,legendLabel:name,includeInLegend:true,preset:"",dashArray:"",legendSymbol:isPoint?"marker":"swatch",legendDashArray:"",
     };
     const layer=buildLeafletLayer(geojson,cfg);
     if(!layer)return;
@@ -529,7 +534,7 @@ export default function App() {
       if(item.id!==id)return item;
       if(item.isDrawn){
         const u={...item,...patch};
-        item.layer?.setStyle?.({color:u.color,weight:+u.weight,fillColor:u.fillColor,fillOpacity:+u.fillOpacity,opacity:+u.layerOpacity});
+        item.layer?.setStyle?.({color:u.color,weight:+u.weight,fillColor:u.fillColor,fillOpacity:+u.fillOpacity,opacity:+u.layerOpacity,dashArray:u.dashArray||undefined,lineCap:"round",lineJoin:"round"});
         return u;
       }
       if(Object.keys(patch).some(k=>RERENDER.has(k))) return reRenderLayer(item,patch);
@@ -556,6 +561,76 @@ export default function App() {
     });
   };
 
+  const saveProject=()=>{
+    const filenameBase=(title||"mapviewer-project").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-|-$/g,"")||"mapviewer-project";
+    downloadProjectFile(serializeProject({
+      title, subtitle, baseMap, northArrow, showLegend, showInset, logo, insetImage,
+      legendItems, canvasImages, textEls, callouts, curvedLabels, groups, layers,
+      titlePos, logoPos, legendPos, insetPos, exportScale,
+    }), filenameBase);
+  };
+
+  const loadProject=async(file)=>{
+    if(!file) return;
+    try{
+      const project=await parseProjectFile(file);
+      const map=mapRef.current;
+      if(map){
+        layers.forEach(item=>{ if(item.layer) map.removeLayer(item.layer); });
+      }
+      const restoredLayers=(project.layers||[]).map(item=>{
+        const next={...item};
+        if(next._geojson){
+          const leafletLayer=buildLeafletLayer(next._geojson,next);
+          next.layer=leafletLayer;
+          if(next.visible!==false) leafletLayer?.addTo(map);
+        }
+        return next;
+      });
+      setLayers(restoredLayers);
+      setTitle(project.title||"RIFT PROJECT");
+      setSubtitle(project.subtitle||"");
+      setBaseMap(project.baseMap||"sat");
+      if(project.baseMap) switchBase(project.baseMap);
+      setNorthArrow(project.northArrow!==false);
+      setShowLegend(project.showLegend!==false);
+      setShowInset(project.showInset!==false);
+      setLogo(project.logo||null);
+      setInsetImage(project.insetImage||null);
+      setLegendItems(Array.isArray(project.legendItems)?project.legendItems:[]);
+      setCanvasImages(Array.isArray(project.canvasImages)?project.canvasImages:[]);
+      setTextEls(Array.isArray(project.textEls)?project.textEls:[]);
+      setCallouts(Array.isArray(project.callouts)?project.callouts:[]);
+      setCurvedLabels(Array.isArray(project.curvedLabels)?project.curvedLabels:[]);
+      setGroups(Array.isArray(project.groups)?project.groups:[]);
+      if(project.titlePos) setTitlePos(project.titlePos);
+      if(project.logoPos) setLogoPos(project.logoPos);
+      if(project.legendPos) setLegendPos(project.legendPos);
+      if(project.insetPos) setInsetPos(project.insetPos);
+      if(project.exportScale) setExportScale(project.exportScale);
+      setSelectedId(null);
+      setTimeout(()=>{
+        try{
+          const vis=restoredLayers.filter(l=>l.visible!==false&&l.layer).map(l=>l.layer);
+          if(vis.length){
+            const b=L.featureGroup(vis).getBounds();
+            if(b.isValid()) map.fitBounds(b,{padding:[20,20]});
+          }
+        }catch{}
+      }, 50);
+    }catch(err){
+      console.error(err);
+      alert(`Project load failed: ${err.message}`);
+    }finally{
+      if(projectInputRef.current) projectInputRef.current.value="";
+    }
+  };
+
+  const buildLegendFromLayers=()=>{
+    const next=layers.filter(l=>l.includeInLegend).map(makeLegendItemFromLayer);
+    setLegendItems(next);
+  };
+
   const fitAll=()=>{
     const map=mapRef.current;if(!map)return;
     const vis=layers.filter(l=>l.visible&&l.layer).map(l=>l.layer);
@@ -567,6 +642,7 @@ export default function App() {
     const{osm,sat}=map._baseLayers;
     if(map._activeBase)map.removeLayer(map._activeBase);
     const next=type==="osm"?osm:sat;next.addTo(map);map._activeBase=next;
+    setBaseMap(type);
   };
 
   // ── PNG Export ────────────────────────────────────────────────────────────
@@ -590,7 +666,7 @@ export default function App() {
       });
       const surface=document.querySelector(".export-surface");
       const canvas=await window.html2canvas(surface,{
-        useCORS:true,allowTaint:true,scale:2,logging:false,backgroundColor:"#ffffff",imageTimeout:20000,
+        useCORS:true,allowTaint:true,scale:exportScale,logging:false,backgroundColor:"#ffffff",imageTimeout:20000,
         onclone:(doc)=>{
           ["leaflet-map-pane","leaflet-tile-pane","leaflet-overlay-pane","leaflet-shadow-pane","leaflet-marker-pane","leaflet-tooltip-pane"].forEach(cls=>{
             doc.querySelectorAll(`.${cls}`).forEach(el=>{
@@ -647,7 +723,7 @@ export default function App() {
     const legendSvg=showLegend&&legendItems.length?`<g>
       <rect x="${lx}" y="${ly}" width="${lw}" height="${lh2}" fill="rgba(255,255,255,0.96)" stroke="#b8c4ce" stroke-width="1" rx="2"/>
       ${legendItems.map((item,i)=>`<g transform="translate(${lx+10},${ly+14+i*24})">
-        ${item.type==="line"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.color}" stroke-width="2.5"/>`:item.type==="marker"?`<circle cx="9" cy="9" r="7" fill="${item.color}"/>`:`<rect x="0" y="0" width="18" height="18" fill="${item.color}"/>`}
+        ${item.type==="line"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.strokeColor||item.color}" stroke-width="2.5" ${item.dashArray?`stroke-dasharray="${item.dashArray}"`:""}/>`:item.type==="marker"?`<circle cx="9" cy="9" r="7" fill="${item.color}" stroke="#333" stroke-width="1"/>`:item.type==="dashed-area"?`<rect x="0" y="0" width="18" height="18" fill="${item.color}" fill-opacity="0.15" stroke="${item.strokeColor||item.color}" stroke-width="2" stroke-dasharray="${item.dashArray||"8,4"}"/>`:item.type==="rail"?`<line x1="0" y1="8" x2="20" y2="8" stroke="${item.strokeColor||item.color}" stroke-width="2.5" stroke-dasharray="${item.dashArray||"14,6,2,6"}"/>`:`<rect x="0" y="0" width="18" height="18" fill="${item.color}" stroke="${item.strokeColor||item.color}" stroke-width="1.2"/>`}
         <text x="26" y="13" font-size="13" font-family="Arial" fill="#1a2232">${escapeXml(item.text)}</text>
       </g>`).join("")}
     </g>`:"";
@@ -655,7 +731,7 @@ export default function App() {
       <text x="${tx+14}" y="${ty+28}" font-size="18" font-family="Arial" font-weight="800" fill="#fff">${escapeXml(title)}</text>
       <text x="${tx+14}" y="${ty+48}" font-size="11" font-family="Arial" fill="rgba(255,255,255,0.8)">${escapeXml(subtitle)}</text>
     </g>`;
-    const textSvg=textEls.map(t=>`<foreignObject x="${t.x}" y="${t.y}" width="${t.w}" height="${t.h}"><div xmlns="http://www.w3.org/1999/xhtml" style="color:${t.color};font-size:${t.size}px;font-weight:${t.bold?"bold":"normal"};font-family:Arial;padding:4px;white-space:pre-wrap;">${escapeXml(t.text)}</div></foreignObject>`).join("");
+    const textSvg=textEls.map(t=>{ const lines=String(t.text||"").split(/\n/); return `<text x="${t.x+4}" y="${t.y+18}" font-size="${t.size}" font-family="Arial" font-weight="${t.bold?"700":"400"}" fill="${t.color}">${lines.map((line,i)=>`<tspan x="${t.x+4}" dy="${i===0?0:t.size*1.15}">${escapeXml(line)}</tspan>`).join("")}</text>`; }).join("");
     const calloutSvg=callouts.map(c=>{
       const lines=c.text.replace(/\\n/g,"\n").split("\n");
       const bw=c.w??Math.max(120,Math.max(...lines.map(l=>l.length))*7.5+24), bh=c.h??(lines.length*18+14);
@@ -909,9 +985,7 @@ export default function App() {
               <button className="btn-icon-sm" onClick={()=>setLegendItems(p=>p.filter(x=>x.id!==item.id))}>✕</button>
             </div>
           ))}
-          {layers.filter(l=>l.includeInLegend).length>0&&<button className="btn-ghost" style={{marginTop:6}} onClick={()=>{
-            setLegendItems(p=>[...p,...layers.filter(l=>l.includeInLegend).map(l=>({id:crypto.randomUUID(),text:l.legendLabel,type:l.isPoint?"marker":"swatch",color:l.isPoint?l.markerColor:l.fillColor,markerType:l.markerType||"circle"}))]);
-          }}>↓ Import from layers</button>}
+          {layers.filter(l=>l.includeInLegend).length>0&&<button className="btn-ghost" style={{marginTop:6}} onClick={buildLegendFromLayers}>↺ Build from legend-enabled layers</button>}
         </Sec>
 
         <Sec title="Groups">
@@ -933,24 +1007,36 @@ export default function App() {
           ))}
         </Sec>
 
+        <Sec title="Project">
+          <div className="row2" style={{marginBottom:6}}>
+            <button className="btn" onClick={saveProject}>Save Project</button>
+            <button className="btn" onClick={()=>projectInputRef.current?.click()}>Load Project</button>
+          </div>
+          <input ref={projectInputRef} type="file" accept=".json,.mapviewer.json" style={{display:"none"}} onChange={e=>loadProject(e.target.files?.[0])}/>
+          <div className="hint-text">Saves layers, styling, labels, legend, layout, and branding as a reusable project file.</div>
+        </Sec>
+
         <Sec title="Export">
           <button className="btn w100" onClick={fitAll} style={{marginBottom:6}}>Fit All Layers</button>
           <div className="row2" style={{marginBottom:4}}>
             <button className={`btn${exportType==="png"?" draw-active":""}`} onClick={()=>setExportType("png")}>PNG</button>
             <button className={`btn${exportType==="svg"?" draw-active":""}`} onClick={()=>setExportType("svg")}>SVG</button>
           </div>
+          <Field label={`PNG export scale — ${exportScale}x`}>
+            <input type="range" min="1" max="4" step="1" value={exportScale} onChange={e=>setExportScale(Number(e.target.value))}/>
+          </Field>
           <button className={`btn btn-export w100${exporting?" btn-export-working":""}`}
             onClick={()=>exportType==="svg"?doExportSVG():doExportPNG()} disabled={exporting}>
             {exporting?"Exporting…":"⬇ Export"}
           </button>
-          <div className="export-note">{exportType==="png"?"Street basemap recommended for PNG export":"SVG = vector layers only, designer-editable"}</div>
+          <div className="export-note">{exportType==="png"?"Street basemap recommended for PNG export. Higher scale = larger, sharper file.":"SVG = vector overlays and layout for designer editing."}</div>
         </Sec>
 
         <Sec title={`Layers${layers.length?` (${layers.length})`:""}`}>
           {layers.length===0?<div className="empty-hint">No layers yet.</div>
             :layers.map((l,idx)=>(
               <LayerCard key={l.id} l={l} idx={idx} total={layers.length}
-                onUpdate={p=>updateLayer(l.id,p)} onToggle={()=>toggleLayer(l.id)}
+                onUpdate={p=>updateLayer(l.id,p)} onToggle={()=>toggleLayer(l.id)} onApplyPreset={preset=>updateLayer(l.id, applyPresetToLayer(l, preset))}
                 onRemove={()=>removeLayer(l.id)} onMove={dir=>moveLayer(l.id,dir)}/>
             ))
           }
@@ -1061,8 +1147,10 @@ export default function App() {
 // ─── Legend symbol ────────────────────────────────────────────────────────────
 function LegendSymbol({item}){
   if(item.type==="marker") return <img src={markerSvgUrl(item.markerType,item.color,16)} width="16" height="16" style={{flexShrink:0}} alt=""/>;
-  if(item.type==="line")   return <svg width="24" height="16" style={{flexShrink:0}}><line x1="0" y1="8" x2="24" y2="8" stroke={item.color} strokeWidth="2.5"/></svg>;
-  return <span className="legend-swatch" style={{background:item.color}}/>;
+  if(item.type==="rail") return <svg width="24" height="16" style={{flexShrink:0}}><line x1="0" y1="8" x2="24" y2="8" stroke={item.strokeColor||item.color} strokeWidth="2.5" strokeDasharray={item.dashArray||"14,6,2,6"}/></svg>;
+  if(item.type==="line")   return <svg width="24" height="16" style={{flexShrink:0}}><line x1="0" y1="8" x2="24" y2="8" stroke={item.strokeColor||item.color} strokeWidth="2.5" strokeDasharray={item.dashArray||undefined}/></svg>;
+  if(item.type==="dashed-area") return <svg width="24" height="18" style={{flexShrink:0}}><rect x="2" y="2" width="20" height="14" fill={item.color} fillOpacity="0.15" stroke={item.strokeColor||item.color} strokeWidth="2" strokeDasharray={item.dashArray||"8,4"}/></svg>;
+  return <span className="legend-swatch" style={{background:item.color, border:`1.5px solid ${item.strokeColor||item.color}`}}/>;
 }
 
 function Sec({title,children}){return <div className="sec"><div className="sec-title">{title}</div>{children}</div>;}
@@ -1074,7 +1162,7 @@ function Toggle({label,checked,onChange}){
   </label>);
 }
 
-function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove}){
+function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove,onApplyPreset}){
   const[open,setOpen]=useState(false);
   return(
     <div className="layer-card">
@@ -1094,6 +1182,12 @@ function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove}){
           <Field label={`Opacity — ${Math.round(+l.layerOpacity*100)}%`}>
             <input type="range" min="0" max="1" step="0.05" value={l.layerOpacity} onChange={e=>onUpdate({layerOpacity:e.target.value})}/>
           </Field>
+          <Field label="Style preset">
+            <select value={l.preset||""} onChange={e=>onApplyPreset?.(e.target.value)}>
+              <option value="">Custom</option>
+              {LAYER_PRESETS.map(preset=><option key={preset.value} value={preset.value}>{preset.label}</option>)}
+            </select>
+          </Field>
           <div className="color-trio">
             <div><div className="field-label">Stroke</div><input type="color" value={l.color} onChange={e=>onUpdate({color:e.target.value})}/></div>
             <div><div className="field-label">Fill</div><input type="color" value={l.fillColor} onChange={e=>onUpdate({fillColor:e.target.value})}/></div>
@@ -1109,6 +1203,9 @@ function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove}){
           </Field>
           <Field label={`Line weight — ${l.weight}px`}>
             <input type="range" min="1" max="10" step="1" value={l.weight} onChange={e=>onUpdate({weight:e.target.value})}/>
+          </Field>
+          <Field label="Dash pattern">
+            <input placeholder="e.g. 10,6" value={l.dashArray||""} onChange={e=>onUpdate({dashArray:e.target.value,preset:""})}/>
           </Field>
           {l.isPoint&&<>
             <Field label="Marker type">
@@ -1128,6 +1225,15 @@ function LayerCard({l,idx,total,onUpdate,onToggle,onRemove,onMove}){
               </Field>}
             </div>
           </>}
+          <Field label="Legend symbol">
+            <select value={l.legendSymbol||"swatch"} onChange={e=>onUpdate({legendSymbol:e.target.value,preset:""})}>
+              <option value="swatch">Swatch</option>
+              <option value="line">Line</option>
+              <option value="marker">Marker</option>
+              <option value="dashed-area">Dashed area</option>
+              <option value="rail">Rail</option>
+            </select>
+          </Field>
           <Toggle label="Include in legend" checked={l.includeInLegend} onChange={v=>onUpdate({includeInLegend:v})}/>
         </div>
       )}
