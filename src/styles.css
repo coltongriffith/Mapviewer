@@ -25,7 +25,7 @@ html, body, #root {
 .field { margin-bottom: 10px; }
 .field:last-child { margin-bottom: 0; }
 .field-label { font-size: 11px; color: #8896b0; margin-bottom: 5px; font-weight: 500; }
-.hint-text { font-size: 10px; color: #4b5a7a; margin-top: 4px; font-style: italic; }
+.hint-text { font-size: 10px; color: #4b5a7a; font-style: italic; margin-top: 3px; }
 
 input:not([type="checkbox"]):not([type="color"]):not([type="range"]):not([type="file"]),
 select {
@@ -50,12 +50,10 @@ select { cursor: pointer; }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn-export { background: #1b3a6b; border-color: #2a5298; color: #a8c4f0; font-weight: 600; }
 .btn-export:hover { background: #213f7a; }
-.btn-export-working { background: #2a2a1a !important; border-color: #6b6b2e !important; color: #c4c47c !important; }
-.export-note { font-size: 10px; color: #4b5a7a; margin-top: 6px; text-align: center; }
-
+.btn-export-working { background: #2a2a1a !important; border-color: #5a5a2e !important; color: #c4c47c !important; }
+.export-note { font-size: 10px; color: #4b5a7a; margin-top: 5px; text-align: center; }
 .btn-placing { background: #1a3a1a !important; border-color: #2e6b2e !important; color: #7cc67c !important; animation: pulse 1.2s infinite; }
 @keyframes pulse { 0%,100%{border-color:#2e6b2e} 50%{border-color:#5cb85c} }
-
 .btn-ghost { background: none; border: none; color: #c05050; font-size: 11px; cursor: pointer; padding: 4px 0; display: block; }
 .btn-ghost:hover { color: #e06060; }
 .btn-icon-sm { background: none; border: none; color: #4b5a7a; cursor: pointer; font-size: 13px; padding: 2px 5px; line-height: 1; border-radius: 3px; transition: color 0.12s; flex-shrink: 0; }
@@ -67,14 +65,17 @@ select { cursor: pointer; }
 .btn-order:disabled { opacity: 0.2; cursor: not-allowed; }
 .layer-order-btns { display: flex; flex-direction: column; flex-shrink: 0; margin-right: 2px; }
 
+/* Utility */
+.mt-6 { margin-top: 6px; }
+.mt-8 { margin-top: 8px; }
+.w100 { width: 100%; }
 .row2 { display: flex; gap: 7px; }
 
 .draw-grid { display: grid; grid-template-columns: repeat(5,1fr); gap: 4px; }
-.draw-btn { padding: 6px 2px; font-size: 11px; text-align: center; display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.draw-btn { padding: 6px 2px; font-size: 11px; display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .draw-btn-label { font-size: 9px; color: #8896b0; }
 .draw-active { background: #1b3a6b !important; border-color: #3b6bc4 !important; color: #a8c4f0 !important; }
 .draw-hint { font-size: 11px; color: #a8c4f0; padding: 6px 8px; background: #141c2e; border-radius: 4px; margin-top: 6px; line-height: 1.5; }
-
 .place-hint { font-size: 11px; color: #7cc67c; padding: 5px 8px; background: #1a3a1a; border-radius: 4px; margin-top: 5px; }
 
 .toggle-row { display: flex; align-items: center; gap: 9px; cursor: pointer; margin-bottom: 8px; font-size: 12px; color: #b0bdd4; user-select: none; }
@@ -91,14 +92,11 @@ select { cursor: pointer; }
 .annot-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .annot-swatch { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
 .annot-row input { flex: 1; }
-
 .overlay-row { display: flex; align-items: center; gap: 6px; margin-top: 6px; }
 .overlay-name { font-size: 11px; color: #8896b0; width: 70px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
 
 .legend-editor-row { display: flex; gap: 5px; align-items: center; margin-bottom: 5px; }
-.legend-editor-row input { padding: 6px 8px; }
 .legend-edit-row { display: flex; align-items: center; gap: 6px; padding: 4px 0; border-bottom: 1px solid #1a1f2e; }
-
 .label-section { border-top: 1px solid #1e2330; padding-top: 8px; }
 
 .layer-card { border: 1px solid #252e42; border-radius: 6px; margin-bottom: 8px; background: #14181f; }
@@ -112,15 +110,16 @@ select { cursor: pointer; }
 .map-side { flex: 1; position: relative; background: #2c3340; overflow: hidden; }
 #map { width: 100%; height: 100%; }
 
-/* Leaflet tooltip labels */
 .mv-label { background: rgba(255,255,255,0.88) !important; border: 1px solid #aab !important; border-radius: 3px !important; font-size: 11px !important; font-weight: 600 !important; color: #111 !important; padding: 2px 5px !important; white-space: nowrap !important; pointer-events: none !important; }
 .mv-label::before { display: none !important; }
 
-/* Draggable overlay base */
-.draggable-overlay { position: absolute; z-index: 1001; cursor: move; user-select: none; }
-.draggable-overlay:hover { outline: 1.5px dashed rgba(100,160,255,0.5); }
+/* Draggable elements */
+.drag-el {
+  position: absolute; z-index: 1001; cursor: move; user-select: none;
+}
+.drag-el:hover { outline: 1.5px dashed rgba(100,160,255,0.45); }
 
-/* Title block */
+/* Title */
 .title-block { background: rgba(8,30,92,0.96); color: #fff; padding: 12px 18px 10px; min-width: 210px; box-shadow: 0 4px 16px rgba(0,0,0,0.35); }
 .title-main { font-size: 20px; font-weight: 800; letter-spacing: 0.03em; line-height: 1.1; }
 .title-sub { font-size: 12px; margin-top: 4px; opacity: 0.75; letter-spacing: 0.06em; text-transform: uppercase; }
@@ -129,11 +128,11 @@ select { cursor: pointer; }
 .logo-img { max-width: 160px; max-height: 64px; background: rgba(255,255,255,0.9); padding: 6px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.2); display: block; }
 
 /* North arrow */
-.north-arrow { position: absolute; top: 20px; left: 20px; z-index: 1000; width: 44px; height: 44px; background: rgba(255,255,255,0.88); border: 1px solid #aaa; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
+.north-arrow { position: absolute; top: 20px; left: 20px; z-index: 1000; width: 44px; height: 44px; background: rgba(255,255,255,0.88); border: 1px solid #aaa; border-radius: 50%; display: flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(0,0,0,0.2); pointer-events: none; }
 
 /* Inset */
-.inset-wrap { border: 1.5px solid #7a8fa8; box-shadow: 0 3px 10px rgba(0,0,0,0.3); background: #cdd9e5; }
-.inset-empty { width: 190px; height: 140px; display: flex; align-items: center; justify-content: center; }
+.inset-wrap { border: 1.5px solid #7a8fa8; box-shadow: 0 3px 10px rgba(0,0,0,0.3); }
+.inset-empty { width: 190px; height: 140px; background: #cdd9e5; display: flex; align-items: center; justify-content: center; }
 .inset-empty span { font-size: 10px; color: #7a8fa8; text-align: center; padding: 8px; }
 
 /* Legend */
