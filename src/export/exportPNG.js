@@ -75,14 +75,22 @@ export async function exportPNG(scene, options = {}) {
 
   const rect = el.getBoundingClientRect();
 
+  // x/y tell html2canvas where in the document to start clipping from,
+  // matching the element's actual position (it lives right of the sidebar).
+  // scrollX/scrollY compensate for any window scroll so transforms align.
   const canvas = await html2canvas(el, {
     useCORS: true,
     backgroundColor: "#ffffff",
     scale: pixelRatio,
     width: rect.width,
     height: rect.height,
-    scrollX: 0,
-    scrollY: 0,
+    x: rect.left,
+    y: rect.top,
+    scrollX: -window.scrollX,
+    scrollY: -window.scrollY,
+    windowWidth: document.documentElement.offsetWidth,
+    windowHeight: document.documentElement.offsetHeight,
+    logging: false,
   });
 
   const link = document.createElement("a");

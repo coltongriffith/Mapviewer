@@ -1,6 +1,7 @@
 export function createInitialProjectState() {
   return {
     layers: [],
+    callouts: [],
     layout: {
       title: "Project Map",
       subtitle: "Editable composition",

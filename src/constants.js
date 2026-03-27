@@ -5,3 +5,5 @@ export const EXPORT_DEFAULTS = {
   width: 1600,
   height: 1000,
 };
+
+export const SNAP_THRESHOLD = 10;

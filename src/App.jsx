@@ -1,14 +1,18 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import L from "leaflet";
 import MapCanvas from "./components/MapCanvas";
 import Sidebar from "./components/Sidebar";
 import LayerList from "./components/LayerList";
+import CalloutBox from "./components/CalloutBox";
 import { loadGeoJSON } from "./utils/importers";
 import { buildScene } from "./export/buildScene";
 import { exportPNG } from "./export/exportPNG";
 import { exportSVG } from "./export/exportSVG";
 import { createInitialProjectState } from "./projectState";
 import { applyPresetToLayer, LAYER_PRESETS } from "./mapPresets";
+import { MAP_TEMPLATES } from "./templates";
+import { saveProject, loadProject } from "./utils/projectPersistence";
+import { useUndoableState } from "./hooks/useUndoableState";
 
 function detectLayerKind(geojson) {
   if (!geojson) return "geojson";
@@ -276,8 +280,9 @@ export default function App() {
   const leafletMapRef = useRef(null);
   const fileInputRef = useRef(null);
   const logoInputRef = useRef(null);
+  const loadProjectInputRef = useRef(null);
 
-  const [project, setProject] = useState(() => {
+  const initialProject = useMemo(() => {
     const base = createInitialProjectState();
     return {
       ...base,
@@ -286,9 +291,21 @@ export default function App() {
         ...getDefaultLayoutPatch(),
       },
     };
-  });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const {
+    state: project,
+    setState: setProject,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    clearHistory,
+  } = useUndoableState(initialProject);
 
   const [selectedLayerId, setSelectedLayerId] = useState(null);
+  const [selectedCalloutId, setSelectedCalloutId] = useState(null);
   const [exporting, setExporting] = useState(false);
 
   const selectedLayer = useMemo(
@@ -343,6 +360,126 @@ export default function App() {
     if (selectedLayerId === layerId) {
       setSelectedLayerId(null);
     }
+  };
+
+  // Keyboard shortcuts: Ctrl+Z / Ctrl+Y
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = document.activeElement?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.ctrlKey && e.key === "z" && !e.shiftKey) { e.preventDefault(); undo(); }
+      if (e.ctrlKey && (e.key === "y" || (e.key === "z" && e.shiftKey))) { e.preventDefault(); redo(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [undo, redo]);
+
+  // ── Template ────────────────────────────────────────────────────────────────
+  const applyTemplate = useCallback((key) => {
+    const tpl = MAP_TEMPLATES[key];
+    if (!tpl) return;
+    const containerW = mapContainerRef.current?.offsetWidth ?? 900;
+
+    const resolved = {};
+    Object.entries(tpl.overlaysPatch).forEach(([name, vals]) => {
+      resolved[name] = { ...vals };
+      if (typeof vals.x === "string") {
+        if (vals.x === "center") {
+          const approxW = name === "title" ? 340 : 220;
+          resolved[name].x = Math.round((containerW - approxW) / 2);
+        } else if (vals.x.startsWith("right-")) {
+          const offset = parseInt(vals.x.replace("right-", ""), 10) || 0;
+          resolved[name].x = Math.max(0, containerW - offset);
+        }
+      }
+    });
+    updateLayout({ overlays: resolved });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // ── Save / Load ─────────────────────────────────────────────────────────────
+  const handleSaveProject = () => {
+    const filename = project.layout?.exportSettings?.filename || "mapviewer-export";
+    saveProject(project, filename);
+  };
+
+  const handleLoadProjectFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const loaded = await loadProject(file);
+      setProject(loaded);
+      clearHistory(loaded);
+      setSelectedLayerId(null);
+      setSelectedCalloutId(null);
+    } catch (err) {
+      alert(`Load failed: ${err.message}`);
+    } finally {
+      e.target.value = "";
+    }
+  };
+
+  // ── Callouts ─────────────────────────────────────────────────────────────────
+  function boxesOverlap(ax, ay, aw, ah, bx, by, bw, bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+  }
+
+  const addCallout = () => {
+    const rect = mapContainerRef.current?.getBoundingClientRect();
+    const cw = rect?.width ?? 800;
+    const ch = rect?.height ?? 600;
+    const existing = project.callouts || [];
+
+    const BOX_W = 140, BOX_H = 46, STEP = 36;
+    let boxX = Math.round(cw / 2 - BOX_W / 2);
+    let boxY = Math.round(ch / 2 - BOX_H / 2);
+
+    for (let i = 0; i < existing.length; i++) {
+      const c = existing[i];
+      const bw = c.w ?? BOX_W, bh = c.h ?? BOX_H;
+      if (boxesOverlap(boxX, boxY, BOX_W, BOX_H, c.boxX, c.boxY, bw, bh)) {
+        boxX += STEP;
+        boxY += STEP;
+      }
+    }
+
+    const id = crypto.randomUUID();
+    setProject((prev) => ({
+      ...prev,
+      callouts: [
+        ...(prev.callouts || []),
+        {
+          id,
+          text: "Label",
+          pinX: Math.round(cw / 2),
+          pinY: Math.round(ch / 2),
+          boxX,
+          boxY,
+          w: null,
+          h: null,
+          borderColor: "#333333",
+          bgColor: "#ffffff",
+        },
+      ],
+    }));
+    setSelectedCalloutId(id);
+  };
+
+  const updateCallout = (id, patch) => {
+    setProject((prev) => ({
+      ...prev,
+      callouts: (prev.callouts || []).map((c) =>
+        c.id === id ? { ...c, ...patch } : c
+      ),
+    }));
+  };
+
+  const removeCallout = (id) => {
+    setProject((prev) => ({
+      ...prev,
+      callouts: (prev.callouts || []).filter((c) => c.id !== id),
+    }));
+    if (selectedCalloutId === id) setSelectedCalloutId(null);
   };
 
   const onMapReady = (map) => {
@@ -723,7 +860,21 @@ export default function App() {
         )}
 
         <div className="sidebar-section">
-          <div className="field-label">Layout Elements</div>
+          <div className="row-between">
+            <span className="field-label">Layout Elements</span>
+          </div>
+
+          <label className="field-label">Template</label>
+          <select
+            className="text-input"
+            defaultValue=""
+            onChange={(e) => e.target.value && applyTemplate(e.target.value)}
+          >
+            <option value="">Apply template…</option>
+            {Object.entries(MAP_TEMPLATES).map(([key, tpl]) => (
+              <option key={key} value={key}>{tpl.label}</option>
+            ))}
+          </select>
 
           <label className="field-label">Title Visible</label>
           <select
@@ -900,6 +1051,47 @@ export default function App() {
         </div>
 
         <div className="sidebar-section">
+          <div className="row-between">
+            <span className="field-label">Callouts</span>
+            <button className="btn btn-small" onClick={addCallout}>Add</button>
+          </div>
+
+          {(project.callouts || []).length === 0 && (
+            <div style={{ fontSize: 12, color: "#666", marginTop: 4 }}>
+              No callouts. Click Add to place one.
+            </div>
+          )}
+
+          {(project.callouts || []).map((c) => (
+            <div
+              key={c.id}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                marginTop: 6,
+                padding: "4px 8px",
+                background: selectedCalloutId === c.id ? "#1e3a5f" : "#1a1d24",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+              onClick={() => setSelectedCalloutId(c.id)}
+            >
+              <span style={{ fontSize: 12, color: "#d9dde4", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 140 }}>
+                {String(c.text || "Label").split("\n")[0]}
+              </span>
+              <button
+                className="btn btn-small"
+                style={{ marginLeft: 6, flexShrink: 0 }}
+                onClick={(e) => { e.stopPropagation(); removeCallout(c.id); }}
+              >
+                ✕
+              </button>
+            </div>
+          ))}
+        </div>
+
+        <div className="sidebar-section">
           <div className="field-label">Export</div>
 
           <label className="field-label">Filename</label>
@@ -935,6 +1127,27 @@ export default function App() {
             </button>
             <button className="btn" disabled={exporting} onClick={handleExportSVG}>
               {exporting ? "Working..." : "Export SVG"}
+            </button>
+          </div>
+
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <button className="btn btn-small" onClick={handleSaveProject}>Save Project</button>
+            <button className="btn btn-small" onClick={() => loadProjectInputRef.current?.click()}>Load Project</button>
+            <input
+              ref={loadProjectInputRef}
+              type="file"
+              accept=".json,.mapviewer.json,application/json"
+              style={{ display: "none" }}
+              onChange={handleLoadProjectFile}
+            />
+          </div>
+
+          <div style={{ marginTop: 6, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <button className="btn btn-small" disabled={!canUndo} onClick={undo} title="Undo (Ctrl+Z)">
+              ↩ Undo
+            </button>
+            <button className="btn btn-small" disabled={!canRedo} onClick={redo} title="Redo (Ctrl+Y)">
+              ↪ Redo
             </button>
           </div>
         </div>
@@ -1115,6 +1328,24 @@ export default function App() {
               </div>
             </OverlayHandle>
           )}
+
+          {(project.callouts || []).map((c) => {
+            const rect = mapContainerRef.current?.getBoundingClientRect();
+            const cw = rect?.width ?? 800;
+            const ch = rect?.height ?? 600;
+            return (
+              <CalloutBox
+                key={c.id}
+                c={c}
+                selected={selectedCalloutId === c.id}
+                onSelect={setSelectedCalloutId}
+                onChange={(patch) => updateCallout(c.id, patch)}
+                snapElements={[]}
+                containerW={cw}
+                containerH={ch}
+              />
+            );
+          })}
         </div>
       </div>
     </div>
