@@ -38,16 +38,15 @@ export async function captureBasemap(width, height) {
         resolve();
       };
 
-      if (img.complete && img.naturalWidth > 0) {
-        // Re-fetch with crossOrigin so the canvas isn't tainted
-        const tmp = new Image();
-        tmp.crossOrigin = "anonymous";
-        tmp.onload  = () => drawImg(tmp);
-        tmp.onerror = () => resolve(); // skip this tile on error
-        tmp.src = img.src + (img.src.includes("?") ? "&" : "?") + "_cors=1";
-      } else {
-        resolve();
-      }
+      // Always re-fetch with crossOrigin so the canvas isn't tainted.
+      // If the tile is still loading (complete===false) we must also wait for
+      // it here — the original load won't fire again, so we kick off a fresh
+      // CORS-enabled request regardless of img.complete.
+      const tmp = new Image();
+      tmp.crossOrigin = "anonymous";
+      tmp.onload  = () => drawImg(tmp);
+      tmp.onerror = () => resolve(); // skip this tile on error
+      tmp.src = img.src + (img.src.includes("?") ? "&" : "?") + "_cors=1";
     })
   );
 

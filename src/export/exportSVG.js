@@ -4,10 +4,18 @@ import { renderLegend      } from "./renderers/renderLegend";
 import { renderLayoutItems } from "./renderers/renderLayoutItems";
 import { captureBasemap    } from "./captureBasemap";
 import { downloadBlob      } from "../utils/svg";
+import { wait, waitForTiles } from "./exportUtils";
 
 export async function exportSVG(scene, options = {}) {
   const { width, height } = scene;
   const filename = options.filename || "map";
+
+  // Allow tiles to settle after any recent pan/zoom before capturing.
+  // Without this delay, newly loaded tiles may still be in-flight and
+  // captureBasemap would draw a blank canvas (same race condition that
+  // exportPNG already guards against with its own wait).
+  await wait(400);
+  await waitForTiles();
 
   // Try to embed the raster basemap as a base64 image so the exported SVG
   // looks like the on-screen map.  Falls back to a plain background colour

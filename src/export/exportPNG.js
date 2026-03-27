@@ -1,3 +1,5 @@
+import { wait, waitForTiles } from "./exportUtils";
+
 function loadHtml2Canvas() {
   if (window.html2canvas) return Promise.resolve(window.html2canvas);
 
@@ -37,25 +39,6 @@ function loadHtml2Canvas() {
 
     document.head.appendChild(script);
   });
-}
-
-function wait(ms) {
-  return new Promise((res) => setTimeout(res, ms));
-}
-
-async function waitForTiles() {
-  const tiles = document.querySelectorAll(".leaflet-tile");
-  if (!tiles.length) return;
-  await Promise.all(
-    Array.from(tiles).map(
-      (tile) =>
-        new Promise((resolve) => {
-          if (tile.complete) return resolve();
-          tile.onload  = resolve;
-          tile.onerror = resolve;
-        })
-    )
-  );
 }
 
 export async function exportPNG(scene, options = {}) {
@@ -104,6 +87,19 @@ export async function exportPNG(scene, options = {}) {
           pane.style.top       = m[2].trim();
         }
       }
+      // After zoom, Leaflet's per-zoom-level tile containers (.leaflet-tile-container)
+      // also carry translate3d transforms that html2canvas mishandles, causing tiles
+      // to render offset from the vector layer.  Neutralise them the same way.
+      clonedDoc.querySelectorAll(".leaflet-tile-container").forEach((el) => {
+        const t = el.style.transform || "";
+        const m = t.match(/translate3d\(\s*([^,]+),\s*([^,]+)/);
+        if (m) {
+          el.style.transform = "none";
+          el.style.position  = "absolute";
+          el.style.left      = m[1].trim();
+          el.style.top       = m[2].trim();
+        }
+      });
     },
   });
 
