@@ -10,75 +10,136 @@ body,
   box-sizing: border-box;
 }
 
+/* ── App shell ───────────────────────────────────────────────────── */
+
 .app-shell {
   display: flex;
   height: 100%;
   width: 100%;
-  background: #0f1115;
+  background: #0d1017;
   color: #ffffff;
 }
 
+/* ── Sidebar ─────────────────────────────────────────────────────── */
+
 .sidebar-section {
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .sidebar-title {
-  font-size: 20px;
+  font-size: 17px;
   font-weight: 700;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
+  letter-spacing: 0.2px;
 }
 
 .sidebar-subtitle {
-  font-size: 12px;
-  color: #a8b0be;
+  font-size: 11px;
+  color: #7a8599;
+  margin-bottom: 4px;
 }
+
+/* ── Sidebar tabs ────────────────────────────────────────────────── */
+
+.sidebar-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: 14px;
+  background: #151a22;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.sidebar-tab {
+  flex: 1;
+  padding: 6px 4px;
+  border: none;
+  background: transparent;
+  color: #7a8599;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 0.15s, color 0.15s;
+}
+
+.sidebar-tab:hover {
+  background: #1e2533;
+  color: #c8d0dc;
+}
+
+.sidebar-tab.active {
+  background: #1e2d45;
+  color: #7abaff;
+}
+
+/* ── Form controls ───────────────────────────────────────────────── */
 
 .field-label {
   display: block;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
-  margin-bottom: 6px;
+  margin-bottom: 5px;
   margin-top: 10px;
-  color: #dce2ea;
+  color: #c0c8d8;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
 }
 
 .text-input,
 select.text-input {
   width: 100%;
-  padding: 8px 10px;
-  border: 1px solid #2e3440;
-  background: #171b22;
+  padding: 7px 10px;
+  border: 1px solid #252d3d;
+  background: #151c28;
   color: #ffffff;
   border-radius: 6px;
+  font-size: 13px;
+}
+
+.text-input:focus,
+select.text-input:focus {
+  outline: none;
+  border-color: #3b6ecf;
 }
 
 .color-input {
   width: 100%;
-  height: 36px;
-  border: 1px solid #2e3440;
-  background: #171b22;
+  height: 34px;
+  border: 1px solid #252d3d;
+  background: #151c28;
   border-radius: 6px;
-  padding: 4px;
+  padding: 3px;
+  cursor: pointer;
 }
 
 .btn {
   width: 100%;
-  padding: 10px 12px;
-  border: 1px solid #2f3745;
-  background: #1a2130;
-  color: #ffffff;
+  padding: 9px 12px;
+  border: 1px solid #2a3447;
+  background: #182236;
+  color: #d0dae8;
   border-radius: 6px;
   cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: background 0.15s;
 }
 
 .btn:hover {
-  background: #232c3d;
+  background: #1f2e48;
+  color: #ffffff;
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .btn-small {
   width: auto;
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 5px 10px;
+  font-size: 11px;
 }
 
 .row-between {
@@ -87,83 +148,98 @@ select.text-input {
   justify-content: space-between;
 }
 
-.export-buttons {
-  display: grid;
-  gap: 8px;
-}
+/* ── Map stage ───────────────────────────────────────────────────── */
 
 .map-stage {
   flex: 1;
   display: flex;
   flex-direction: column;
   min-width: 0;
-  background: #d9dde4;
-}
-
-.map-header {
-  padding: 16px 18px 0 18px;
-  background: #d9dde4;
-}
-
-.map-title-block {
-  display: inline-block;
-  background: rgba(8, 30, 92, 0.95);
-  padding: 12px 16px;
-  color: #ffffff;
-  border-radius: 4px;
-}
-
-.map-title {
-  font-size: 22px;
-  font-weight: 800;
-  letter-spacing: 0.2px;
-}
-
-.map-subtitle {
-  font-size: 12px;
-  opacity: 0.85;
-  margin-top: 3px;
+  background: #1a1f2b;
 }
 
 .map-container {
   position: relative;
   flex: 1;
-  margin: 18px;
-  border-radius: 8px;
+  margin: 16px;
+  border-radius: 6px;
   overflow: hidden;
   background: #eef1f5;
-  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
 }
 
-#map {
-  width: 100%;
-  height: 100%;
+/* ── Layer list ──────────────────────────────────────────────────── */
+
+.layer-list {
+  display: grid;
+  gap: 6px;
 }
+
+.layer-item {
+  border: 1px solid #222c3d;
+  padding: 8px 8px 6px;
+  border-radius: 6px;
+  background: #111827;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+
+.layer-item:hover {
+  border-color: #2e4070;
+}
+
+.layer-item.active {
+  border-color: #3b6ecf;
+  background: #131e35;
+}
+
+.layer-name {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #e0e6f0;
+}
+
+.layer-toggle {
+  width: auto;
+  min-width: 38px;
+  padding: 4px 8px;
+  font-size: 11px;
+}
+
+/* ── Legend ──────────────────────────────────────────────────────── */
 
 .legend-box {
   position: absolute;
   left: 16px;
   bottom: 16px;
-  min-width: 180px;
-  background: rgba(255, 255, 255, 0.94);
+  min-width: 140px;
+  background: rgba(255, 255, 255, 0.96);
   color: #1b2533;
   border: 1px solid #cad2df;
   border-radius: 6px;
-  padding: 10px 12px;
-  z-index: 1000;
+  padding: 10px 14px;
+  z-index: 500;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.12);
 }
 
 .legend-title {
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 700;
   margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
 }
 
 .legend-row {
   display: flex;
   align-items: center;
   gap: 8px;
-  font-size: 13px;
+  font-size: 12px;
   margin-bottom: 6px;
 }
 
@@ -171,44 +247,73 @@ select.text-input {
   margin-bottom: 0;
 }
 
-.legend-swatch {
-  width: 16px;
-  height: 16px;
-  border: 2px solid #000;
-  border-radius: 2px;
+/* ── Map title block ─────────────────────────────────────────────── */
+
+.map-title-block {
+  display: inline-block;
+  background: rgba(8, 30, 92, 0.94);
+  padding: 12px 16px;
+  color: #ffffff;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
 
-.layer-list {
-  display: grid;
-  gap: 8px;
+.map-title {
+  font-size: 20px;
+  font-weight: 700;
+  font-family: Georgia, "Times New Roman", serif;
+  letter-spacing: 0.2px;
 }
 
-.layer-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  border: 1px solid #2b3341;
-  padding: 8px;
-  border-radius: 6px;
-  background: #141922;
+.map-subtitle {
+  font-size: 12px;
+  opacity: 0.85;
+  margin-top: 4px;
+  font-family: Georgia, "Times New Roman", serif;
 }
 
-.layer-item.active {
-  border-color: #5a8cff;
-  background: #182236;
+/* ── Callout ─────────────────────────────────────────────────────── */
+
+.callout-box {
+  position: absolute;
+  z-index: 500;
+  background: #ffffff;
+  border: 1.5px solid #2c3e50;
+  border-radius: 4px;
+  padding: 7px 10px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  font-family: Georgia, "Times New Roman", serif;
+  color: #1a1a1a;
+  cursor: grab;
+  user-select: none;
+  min-width: 120px;
+  max-width: 220px;
 }
 
-.layer-name {
-  flex: 1;
-  min-width: 0;
-  font-size: 13px;
-  white-space: nowrap;
+/* ── Inset map ───────────────────────────────────────────────────── */
+
+.inset-map {
+  border: 2px solid #4a6fa5;
+  border-radius: 4px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.18);
   overflow: hidden;
-  text-overflow: ellipsis;
+  background: #eef2f7;
 }
 
-.layer-toggle {
-  width: auto;
-  min-width: 40px;
-  padding: 6px 8px;
+/* ── Leaflet overrides ───────────────────────────────────────────── */
+
+.leaflet-container {
+  font-family: Arial, sans-serif;
+}
+
+.leaflet-control-attribution {
+  font-size: 9px !important;
+  opacity: 0.7;
+}
+
+/* ── Misc ────────────────────────────────────────────────────────── */
+
+input[type="range"] {
+  width: 100%;
+  accent-color: #3b6ecf;
 }

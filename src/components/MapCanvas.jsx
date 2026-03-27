@@ -21,7 +21,7 @@ const BASEMAPS = {
   },
 };
 
-export default function MapCanvas({ onReady, project }) {
+export default function MapCanvas({ onReady, project, onFeatureClick }) {
   const mapRef = useRef(null);
   const mapElRef = useRef(null);
   const baseLayerRef = useRef(null);
@@ -45,8 +45,8 @@ export default function MapCanvas({ onReady, project }) {
     const map = mapRef.current;
     if (!map) return;
 
-    const key = project?.layout?.basemap || "light";
-    const cfg = BASEMAPS[key] || BASEMAPS.light;
+    const key = project?.layout?.basemap || "topo";
+    const cfg = BASEMAPS[key] || BASEMAPS.topo;
 
     if (baseLayerRef.current) {
       map.removeLayer(baseLayerRef.current);
@@ -69,6 +69,8 @@ export default function MapCanvas({ onReady, project }) {
       if (layer.visible === false || !layer.geojson) return;
 
       const style = layer.style || {};
+      const isClickablePoints = layer.role === "drillholes" && layer.type === "points";
+
       const geoLayer = L.geoJSON(layer.geojson, {
         style: () => ({
           color: style.stroke || "#54a6ff",
@@ -77,19 +79,36 @@ export default function MapCanvas({ onReady, project }) {
           fillOpacity: style.fillOpacity ?? 0.22,
           dashArray: style.dashArray || "",
         }),
-        pointToLayer: (_feature, latlng) =>
-          L.circleMarker(latlng, {
-            radius: style.markerSize ?? 10,
+        pointToLayer: (_feature, latlng) => {
+          const marker = L.circleMarker(latlng, {
+            radius: style.markerSize ?? 6,
             color: style.markerColor || "#111111",
             fillColor: style.markerColor || "#111111",
             fillOpacity: 1,
             weight: 1,
-          }),
+          });
+
+          if (isClickablePoints) {
+            marker.on("click", (e) => {
+              L.DomEvent.stopPropagation(e);
+              onFeatureClick?.(latlng, _feature, layer);
+            });
+            marker.on("mouseover", () => {
+              marker.setStyle({ radius: (style.markerSize ?? 6) + 3 });
+              marker.getElement()?.style && (marker.getElement().style.cursor = "pointer");
+            });
+            marker.on("mouseout", () => {
+              marker.setStyle({ radius: style.markerSize ?? 6 });
+            });
+          }
+
+          return marker;
+        },
       });
 
       geoLayer.addTo(group);
     });
-  }, [project]);
+  }, [project, onFeatureClick]);
 
   return <div ref={mapElRef} style={{ width: "100%", height: "100%" }} />;
 }
