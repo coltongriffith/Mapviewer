@@ -1,15 +1,24 @@
-import { renderLayerGroup } from "./renderers/renderLayerGroup";
-import { renderPointGroup } from "./renderers/renderPointGroup";
-import { renderLegend } from "./renderers/renderLegend";
+import { renderLayerGroup   } from "./renderers/renderLayerGroup";
+import { renderPointGroup  } from "./renderers/renderPointGroup";
+import { renderLegend      } from "./renderers/renderLegend";
 import { renderLayoutItems } from "./renderers/renderLayoutItems";
-import { downloadBlob } from "../utils/svg";
+import { captureBasemap    } from "./captureBasemap";
+import { downloadBlob      } from "../utils/svg";
 
-export function exportSVG(scene, options = {}) {
+export async function exportSVG(scene, options = {}) {
   const { width, height } = scene;
   const filename = options.filename || "map";
 
+  // Try to embed the raster basemap as a base64 image so the exported SVG
+  // looks like the on-screen map.  Falls back to a plain background colour
+  // if tiles can't be captured (CORS restriction or empty tile layer).
+  const basemapDataUrl = await captureBasemap(width, height);
+  const baseBg = basemapDataUrl
+    ? `<image x="0" y="0" width="${width}" height="${height}" href="${basemapDataUrl}" preserveAspectRatio="none"/>`
+    : `<rect width="100%" height="100%" fill="#eef1f5"/>`;
+
   const body = [
-    `<rect width="100%" height="100%" fill="#e8e8e8"/>`,
+    baseBg,
     renderLayerGroup(scene),
     renderPointGroup(scene),
     renderLayoutItems(scene),

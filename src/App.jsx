@@ -109,55 +109,39 @@ function OverlayHandle({
   hidden = false,
   boundsRef,
 }) {
-  const dragRef = useRef({
-    active: false,
-    startX: 0,
-    startY: 0,
-    originX: 0,
-    originY: 0,
-  });
-
   if (hidden) return null;
 
+  // onMove and onUp are defined INSIDE onPointerDown so they close over each
+  // other. removeEventListener always receives the same function reference
+  // that was attached — no stale-listener accumulation across re-renders.
   const onPointerDown = (e) => {
     if (e.target.closest("input, button, select, textarea")) return;
     e.preventDefault();
     e.stopPropagation();
 
-    dragRef.current = {
-      active: true,
-      startX: e.clientX,
-      startY: e.clientY,
-      originX: position.x || 0,
-      originY: position.y || 0,
+    const startX  = e.clientX;
+    const startY  = e.clientY;
+    const originX = position.x || 0;
+    const originY = position.y || 0;
+
+    const onMove = (ev) => {
+      const bounds = boundsRef.current?.getBoundingClientRect();
+      let nx = originX + (ev.clientX - startX);
+      let ny = originY + (ev.clientY - startY);
+      if (bounds) {
+        nx = clamp(nx, 0, Math.max(0, bounds.width  - 50));
+        ny = clamp(ny, 0, Math.max(0, bounds.height - 30));
+      }
+      onChange({ x: Math.round(nx), y: Math.round(ny) });
     };
 
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", onPointerUp);
-  };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup",   onUp);
+    };
 
-  const onPointerMove = (e) => {
-    if (!dragRef.current.active) return;
-
-    const bounds = boundsRef.current?.getBoundingClientRect();
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-
-    let nextX = dragRef.current.originX + dx;
-    let nextY = dragRef.current.originY + dy;
-
-    if (bounds) {
-      nextX = clamp(nextX, 0, Math.max(0, bounds.width - 50));
-      nextY = clamp(nextY, 0, Math.max(0, bounds.height - 30));
-    }
-
-    onChange({ x: Math.round(nextX), y: Math.round(nextY) });
-  };
-
-  const onPointerUp = () => {
-    dragRef.current.active = false;
-    window.removeEventListener("pointermove", onPointerMove);
-    window.removeEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup",   onUp);
   };
 
   return (
@@ -297,6 +281,7 @@ export default function App() {
   const {
     state: project,
     setState: setProject,
+    setStateSilent: setProjectSilent,
     undo,
     redo,
     canUndo,
@@ -313,38 +298,43 @@ export default function App() {
     [project.layers, selectedLayerId]
   );
 
+  // Builds the merged layout object — used by updateLayout
+  const mergeLayout = (prevLayout, patch) => ({
+    ...prevLayout,
+    ...patch,
+    exportSettings: patch.exportSettings
+      ? { ...(prevLayout?.exportSettings || {}), ...patch.exportSettings }
+      : prevLayout?.exportSettings,
+    legendStyle: patch.legendStyle
+      ? { ...(prevLayout?.legendStyle || {}), ...patch.legendStyle }
+      : prevLayout?.legendStyle,
+    overlays: patch.overlays
+      ? {
+          ...(prevLayout?.overlays || {}),
+          ...Object.fromEntries(
+            Object.entries(patch.overlays).map(([key, value]) => [
+              key,
+              {
+                ...(prevLayout?.overlays?.[key] || {}),
+                ...(value || {}),
+              },
+            ])
+          ),
+        }
+      : prevLayout?.overlays,
+  });
+
+  // Silent (no history entry) — used for drag moves, style slider tweaks, etc.
   const updateLayout = (patch) => {
-    setProject((prev) => ({
+    setProjectSilent((prev) => ({
       ...prev,
-      layout: {
-        ...prev.layout,
-        ...patch,
-        exportSettings: patch.exportSettings
-          ? { ...(prev.layout?.exportSettings || {}), ...patch.exportSettings }
-          : prev.layout?.exportSettings,
-        legendStyle: patch.legendStyle
-          ? { ...(prev.layout?.legendStyle || {}), ...patch.legendStyle }
-          : prev.layout?.legendStyle,
-        overlays: patch.overlays
-          ? {
-              ...(prev.layout?.overlays || {}),
-              ...Object.fromEntries(
-                Object.entries(patch.overlays).map(([key, value]) => [
-                  key,
-                  {
-                    ...(prev.layout?.overlays?.[key] || {}),
-                    ...(value || {}),
-                  },
-                ])
-              ),
-            }
-          : prev.layout?.overlays,
-      },
+      layout: mergeLayout(prev.layout, patch),
     }));
   };
 
+  // Silent — style sliders fire continuously; history would flood
   const updateLayer = (layerId, patch) => {
-    setProject((prev) => ({
+    setProjectSilent((prev) => ({
       ...prev,
       layers: prev.layers.map((layer) =>
         layer.id === layerId ? mergeDeep(layer, patch) : layer
@@ -465,8 +455,9 @@ export default function App() {
     setSelectedCalloutId(id);
   };
 
+  // Silent — callout drag fires continuously
   const updateCallout = (id, patch) => {
-    setProject((prev) => ({
+    setProjectSilent((prev) => ({
       ...prev,
       callouts: (prev.callouts || []).map((c) =>
         c.id === id ? { ...c, ...patch } : c
@@ -616,7 +607,7 @@ export default function App() {
     setExporting(true);
     try {
       const scene = buildScene(mapContainerRef.current, project, leafletMapRef.current);
-      exportSVG(scene, project.layout?.exportSettings || {});
+      await exportSVG(scene, project.layout?.exportSettings || {});
     } catch (err) {
       console.error(err);
       alert(`SVG export failed: ${err.message}`);
